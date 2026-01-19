@@ -113,4 +113,4 @@ if __name__ == "__main__":
         run_once()
         print("💤 Pause de 4 heures...")
         # 4 heures = 14400 secondes. Le bot vérifie 6 fois par jour.
-        time.sleep(14400)
+        time.sleep(120)
