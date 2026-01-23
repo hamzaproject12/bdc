@@ -3,8 +3,8 @@ import json
 import requests
 import hashlib
 import os
-import math # <--- Pour la majoration (arrondi supérieur)
-import re   # <--- Pour extraire le chiffre "398" du texte
+import math 
+import re   
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
@@ -19,17 +19,25 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 KEYWORDS = {
     "Dév & Web": ["développement", "application", "web", "portail", "logiciel", "plateforme", "maintenance", "site internet", "app", "digital"],
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
-    "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"]
+    "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
+    "Zakariya": [
+        "formation", "sessio n", "atelier", "renforcement de capacité", # Training
+        "organisation", "animation", "événement", "sensibilisation",    # Events
+        "réception", "pause-café", "restauration", "traiteur",          # Catering (Basé sur l'offre 1)
+        "impression", "conception", "banderole", "flyer", "support",    # Print (Basé sur l'offre 7)
+        "enquête", "étude", "conseil agricole","conseil","agri"         # Consulting (Basé sur l'offre 8)
+        "réunion", 
+    ]
 }
 
-EXCLUSIONS = [
-    "restauration", "nettoyage", "gardiennage", "construction", "repas", "traiteur",
-    "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
-    "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
-    "espaces verts", "piscine", "sport", "vêtement", "habillement", "carburant",
-    "véhicule", "transport", "voyage", "billet d'avion", "hôtel", "hébergement des participants",
-    "aménagement", "travaux", "voirie", "restauration", "gardiennage"
-]
+# EXCLUSIONS = [
+#     "restauration", "nettoyage", "gardiennage", "construction", "repas", "traiteur",
+#     "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
+#     "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
+#     "espaces verts", "piscine", "sport", "vêtement", "habillement", "carburant",
+#     "véhicule", "transport", "voyage", "billet d'avion", "hôtel", "hébergement des participants",
+#     "aménagement", "travaux", "voirie", "restauration", "gardiennage"
+# ]
 
 def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -87,7 +95,6 @@ def run_once():
 
             log(f"🌍 Période : {date_start} -> {date_end}")
 
-            # On commence avec 1 seule page, et on mettra à jour ce chiffre
             max_pages_to_scan = 1 
             current_page = 1
 
@@ -108,31 +115,21 @@ def run_once():
                     page.goto(dynamic_url, timeout=60000, wait_until="domcontentloaded")
                     
                     # --- ALGO MAGIQUE : CALCUL DU NOMBRE DE PAGES ---
-                    # On ne le fait qu'à la première page pour configurer la suite
                     if current_page == 1:
                         try:
-                            # On cherche n'importe quel élément qui contient le texte "Nombre de résultats"
-                            # Le site affiche souvent : "Nombre de résultats : 398"
                             count_element = page.get_by_text("Nombre de résultats").first
                             if count_element.is_visible():
-                                text_content = count_element.inner_text() # ex: "Nombre de résultats : 398"
-                                # On utilise une expression régulière pour extraire juste les chiffres "398"
+                                text_content = count_element.inner_text()
                                 numbers = re.findall(r'\d+', text_content)
                                 if numbers:
-                                    total_results = int(numbers[-1]) # On prend le dernier chiffre trouvé
-                                    
-                                    # FORMULE MAGIQUE : Total / 50 avec majoration
+                                    total_results = int(numbers[-1])
                                     calculated_pages = math.ceil(total_results / 50)
-                                    
-                                    # On met à jour la limite de la boucle !
                                     max_pages_to_scan = calculated_pages
-                                    log(f"🧠 INTELLIGENCE : Trouvé {total_results} résultats -> J'ai calculé qu'il faut scanner {max_pages_to_scan} pages.")
+                                    log(f"🧠 INTELLIGENCE : Trouvé {total_results} résultats -> Scan de {max_pages_to_scan} pages.")
                         except Exception as e:
-                            log(f"⚠️ Impossible de lire le nombre total (on scanne juste la page 1 par sécurité): {e}")
-
+                            log(f"⚠️ Impossible de lire le nombre total : {e}")
                     # -----------------------------------------------
 
-                    # Analyse normale des offres
                     try:
                         page.wait_for_selector(".entreprise__card", timeout=10000)
                     except:
@@ -158,12 +155,27 @@ def run_once():
                             if score > 0:
                                 lines = text.split('\n')
                                 raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
-                                log(f"      ✅ PÉPITE (Page {current_page})! Score {score} ({details})")
-                                alerts.append(f"🚨 **ALERTE {details}** (Score {score})\n{raw_objet}\n[Page {current_page}]({dynamic_url})")
+                                
+                                # --- EXTRACTION INTELLIGENTE DE LA DATE ---
+                                # On cherche une date au format JJ/MM/AAAA dans tout le texte
+                                # Le texte contient souvent "Date limite ... 26/01/2026"
+                                date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
+                                if "Date limite" in text and date_match:
+                                    # On essaie de trouver la date spécifiquement après "Date limite" si possible
+                                    specific_match = re.search(r"Date limite.*?(\d{2}/\d{2}/\d{4})", text, re.DOTALL)
+                                    deadline = specific_match.group(1) if specific_match else date_match.group(1)
+                                else:
+                                    deadline = "Date inconnue"
+                                # ------------------------------------------
+
+                                log(f"      ✅ PÉPITE (Page {current_page})! Score {score} ({details}) | Date: {deadline}")
+                                
+                                # Message Telegram avec la date en haut à droite
+                                alerts.append(f"🚨 **ALERTE {details}** | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})")
                         except: continue
                     
                     time.sleep(2)
-                    current_page += 1 # On passe à la page suivante
+                    current_page += 1
 
                 except Exception as e:
                     log(f"❌ Erreur Page {current_page}: {e}")
@@ -187,10 +199,10 @@ def run_once():
         log("Ø Rien de nouveau.")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Mode Intelligent Auto-Calcul)")
-    send_telegram("🧠 Bot mis à jour : Je calcule moi-même le nombre de pages à scanner !")
+    log("🚀 Bot Démarré (Version avec Dates Limites)")
+    send_telegram("📅 Bot mis à jour : J'affiche maintenant la date limite des devis !")
     
     while True:
         run_once()
-        log("💤 Pause de 1 heure...")
-        time.sleep(120)
+        log("💤 Pause de 4 heure...")
+        time.sleep(14400)
