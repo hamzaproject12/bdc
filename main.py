@@ -32,8 +32,6 @@ KEYWORDS = {
 }
 
 # --- EXCLUSIONS ---
-# J'ai décommenté cette liste car elle est OBLIGATOIRE pour la fonction scorer()
-# J'ai retiré les exclusions "traiteur/restauration" pour Zakariya
 EXCLUSIONS = [
     "nettoyage", "gardiennage", "construction", 
     "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
@@ -82,14 +80,12 @@ def scorer(text):
 
 # --- CŒUR DU SYSTÈME : La fonction qui fait UN essai ---
 def scan_attempt():
-    """
-    Tente de scanner le site UNE fois.
-    Si ça plante (Timeout, etc), cette fonction 'lève une erreur' pour que
-    la boucle principale sache qu'il faut réessayer.
-    """
     seen_ids = load_seen()
     new_ids = set()
-    alerts = []
+    
+    # On change la structure ici : on stocke des objets pour pouvoir trier
+    # Format : [{'score': 5, 'msg': "...", 'id': "..."}, ...]
+    pending_alerts = [] 
 
     today = datetime.now()
     future_date = today + timedelta(days=60)
@@ -97,7 +93,6 @@ def scan_attempt():
     date_end = future_date.strftime("%Y-%m-%d")
 
     with sync_playwright() as p:
-        # Configuration Anti-Bot (User Agent)
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -123,7 +118,6 @@ def scan_attempt():
                 f"page={current_page}"
             )
 
-            # Navigation
             page.goto(dynamic_url, timeout=90000, wait_until="commit")
             
             try:
@@ -131,7 +125,6 @@ def scan_attempt():
             except:
                 raise Exception("Le site ne répond pas (Body introuvable)")
 
-            # Calcul du nombre de pages (Uniquement page 1)
             if current_page == 1:
                 try:
                     time.sleep(2) 
@@ -145,7 +138,6 @@ def scan_attempt():
                             log(f"🧠 INTELLIGENCE : {total_results} offres -> {max_pages_to_scan} pages.")
                 except: pass
 
-            # Vérification présence des cartes
             try:
                 page.wait_for_selector(".entreprise__card", timeout=15000)
             except:
@@ -163,23 +155,19 @@ def scan_attempt():
                 try:
                     text = cards.nth(i).inner_text()
 
-                    # --- AJOUT : Extraction et Affichage du Titre ---
+                    # Logs détaillés
                     lines = text.split('\n')
                     raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
-                    # On nettoie le titre pour l'affichage (enlève "Objet :" et coupe à 60 caractères)
                     objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
-                    
                     log(f"   📄 [{i+1}/{count}] {objet_clean}...")
-                    # ------------------------------------------------
 
                     offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
                     
                     if offer_id in seen_ids: continue
-                    new_ids.add(offer_id)
                     
                     score, details = scorer(text)
                     if score > 0:
-                        # Date extraction
+                        # Extraction date
                         date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
                         if "Date limite" in text and date_match:
                             specific_match = re.search(r"Date limite.*?(\d{2}/\d{2}/\d{4})", text, re.DOTALL)
@@ -188,7 +176,17 @@ def scan_attempt():
                             deadline = "Date inconnue"
 
                         log(f"      ✅ PÉPITE! Score {score} ({details})")
-                        alerts.append(f"🚨 **ALERTE {details}** | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})")
+                        
+                        # Création du message
+                        msg_text = f"🚨 **ALERTE {details}** (🎯 Score: {score}) | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})"
+                        
+                        # On stocke l'ID et le message dans une liste temporaire pour trier plus tard
+                        pending_alerts.append({
+                            'score': score, 
+                            'msg': msg_text,
+                            'id': offer_id
+                        })
+                        
                 except: continue
             
             time.sleep(2)
@@ -196,19 +194,28 @@ def scan_attempt():
 
         browser.close()
 
-    # Si on arrive ici, c'est que le scan s'est bien passé
-    if new_ids:
+    # Si on a trouvé des pépites
+    if pending_alerts:
+        # --- TRI DU PLUS GRAND SCORE AU PLUS PETIT ---
+        pending_alerts.sort(key=lambda x: x['score'], reverse=True)
+        # ---------------------------------------------
+        
+        count_sent = 0
+        for item in pending_alerts:
+            # On ajoute l'ID à la mémoire SEULEMENT maintenant (au cas où Telegram plante)
+            new_ids.add(item['id'])
+            send_telegram(item['msg'])
+            count_sent += 1
+        
+        # Mise à jour de la mémoire
         seen_ids.update(new_ids)
         save_seen(seen_ids)
-        if alerts:
-            for msg in alerts: send_telegram(msg)
-            log(f"🚀 {len(alerts)} alertes envoyées.")
-        else:
-            log(f"Ø {len(new_ids)} nouvelles offres vues.")
+        log(f"🚀 {count_sent} alertes envoyées (triées par score).")
+        
     else:
         log("Ø Rien de nouveau.")
     
-    return True # Succès
+    return True 
 
 # --- GESTION DES RELANCES ---
 def run_with_retries():
@@ -217,28 +224,22 @@ def run_with_retries():
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log(f"🏁 Démarrage Scan (Tentative {attempt}/{MAX_RETRIES})...")
-            
-            # On lance le scan. Si ça plante, ça part dans "except Exception"
             success = scan_attempt()
-            
             if success:
-                return # Tout s'est bien passé, on sort de la boucle et on va dormir
-                
+                return 
         except Exception as e:
             log(f"⚠️ ERREUR TENTATIVE {attempt} : {e}")
-            
             if attempt < MAX_RETRIES:
-                wait_time = 60 # On attend 60 secondes avant de réessayer
+                wait_time = 60 
                 log(f"⏳ Attente de {wait_time}s avant nouvelle tentative...")
                 time.sleep(wait_time)
             else:
-                # C'était la dernière tentative
                 log("❌ ECHEC TOTAL après 3 tentatives.")
                 send_telegram(f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois de suite.\nErreur : {e}\nJe passe en mode pause 4h.")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Mode Logs Détaillés + Robustesse)")
-    send_telegram("👀 Bot mis à jour : Je t'affiche tout ce que je lis dans les logs !")
+    log("🚀 Bot Démarré (Tri par Score + Affichage Score)")
+    send_telegram("🏆 Bot mis à jour : Les meilleures offres (Haut Score) s'affichent en premier !")
     
     while True:
         run_with_retries()
