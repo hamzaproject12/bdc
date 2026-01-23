@@ -16,6 +16,7 @@ SEEN_FILE = os.path.join(DATA_PATH, "seen_offers.json")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# --- MOTS-CLÉS ---
 KEYWORDS = {
     "Dév & Web": ["développement", "application", "web", "portail", "logiciel", "plateforme", "maintenance", "site internet", "app", "digital"],
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
@@ -30,13 +31,14 @@ KEYWORDS = {
     ]
 }
 
+# --- EXCLUSIONS ---
 # EXCLUSIONS = [
-#     "restauration", "nettoyage", "gardiennage", "construction", "repas", "traiteur",
+#     "nettoyage", "gardiennage", "construction", 
 #     "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
 #     "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
-#     "espaces verts", "piscine", "sport", "vêtement", "habillement", "carburant",
-#     "véhicule", "transport", "voyage", "billet d'avion", "hôtel", "hébergement des participants",
-#     "aménagement", "travaux", "voirie", "restauration", "gardiennage"
+#     "espaces verts", "piscine", "vêtement", "habillement", "carburant",
+#     "véhicule", "transport", "billet d'avion", "hôtel", "hébergement des participants",
+#     "aménagement", "travaux", "voirie"
 # ]
 
 def log(msg):
@@ -76,8 +78,13 @@ def scorer(text):
             
     return 0, "Pas de mots-clés"
 
-def run_once():
-    log("--- DÉBUT DU CYCLE INTELLIGENT ---")
+# --- CŒUR DU SYSTÈME : La fonction qui fait UN essai ---
+def scan_attempt():
+    """
+    Tente de scanner le site UNE fois.
+    Si ça plante (Timeout, etc), cette fonction 'lève une erreur' pour que
+    la boucle principale sache qu'il faut réessayer.
+    """
     seen_ids = load_seen()
     new_ids = set()
     alerts = []
@@ -88,105 +95,101 @@ def run_once():
     date_end = future_date.strftime("%Y-%m-%d")
 
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            context = browser.new_context(viewport={"width": 1920, "height": 1080})
-            page = context.new_page()
+        # Configuration Anti-Bot (User Agent)
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
 
-            log(f"🌍 Période : {date_start} -> {date_end}")
+        log(f"🌍 Connexion Période : {date_start} -> {date_end}")
 
-            max_pages_to_scan = 1 
-            current_page = 1
+        max_pages_to_scan = 1 
+        current_page = 1
 
-            while current_page <= max_pages_to_scan:
-                log(f"📄 [PAGE {current_page}/{max_pages_to_scan}] Chargement...")
+        while current_page <= max_pages_to_scan:
+            log(f"📄 [PAGE {current_page}/{max_pages_to_scan}] Chargement...")
 
-                dynamic_url = (
-                    f"https://www.marchespublics.gov.ma/bdc/entreprise/consultation/?"
-                    f"search_consultation_entreprise%5BdateLimiteStart%5D={date_start}&"
-                    f"search_consultation_entreprise%5BdateLimiteEnd%5D={date_end}&"
-                    f"search_consultation_entreprise%5Bcategorie%5D=3&"
-                    f"search_consultation_entreprise%5BpageSize%5D=50&"
-                    f"search_consultation_entreprise%5Bpage%5D={current_page}&"
-                    f"page={current_page}"
-                )
+            dynamic_url = (
+                f"https://www.marchespublics.gov.ma/bdc/entreprise/consultation/?"
+                f"search_consultation_entreprise%5BdateLimiteStart%5D={date_start}&"
+                f"search_consultation_entreprise%5BdateLimiteEnd%5D={date_end}&"
+                f"search_consultation_entreprise%5Bcategorie%5D=3&"
+                f"search_consultation_entreprise%5BpageSize%5D=50&"
+                f"search_consultation_entreprise%5Bpage%5D={current_page}&"
+                f"page={current_page}"
+            )
 
+            # C'est ICI que ça plante souvent. On ne met PAS de try/except global ici
+            # pour laisser l'erreur remonter si le chargement échoue totalement.
+            page.goto(dynamic_url, timeout=90000, wait_until="commit")
+            
+            # Attente intelligente
+            try:
+                page.wait_for_selector("body", timeout=30000)
+            except:
+                raise Exception("Le site ne répond pas (Body introuvable)")
+
+            # Calcul du nombre de pages (Uniquement page 1)
+            if current_page == 1:
                 try:
-                    page.goto(dynamic_url, timeout=60000, wait_until="domcontentloaded")
+                    time.sleep(2) 
+                    count_element = page.get_by_text("Nombre de résultats").first
+                    if count_element.is_visible():
+                        text_content = count_element.inner_text()
+                        numbers = re.findall(r'\d+', text_content)
+                        if numbers:
+                            total_results = int(numbers[-1])
+                            max_pages_to_scan = math.ceil(total_results / 50)
+                            log(f"🧠 INTELLIGENCE : {total_results} offres -> {max_pages_to_scan} pages.")
+                except: pass
+
+            # Vérification présence des cartes
+            try:
+                page.wait_for_selector(".entreprise__card", timeout=15000)
+            except:
+                log(f"⚠️ Page {current_page} semble vide. Arrêt normal.")
+                break
+
+            cards = page.locator(".entreprise__card")
+            count = cards.count()
+            
+            if count == 0: break
+
+            log(f"🔎 Analyse de {count} offres...")
+
+            for i in range(count):
+                try:
+                    text = cards.nth(i).inner_text()
+                    offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
                     
-                    # --- ALGO MAGIQUE : CALCUL DU NOMBRE DE PAGES ---
-                    if current_page == 1:
-                        try:
-                            count_element = page.get_by_text("Nombre de résultats").first
-                            if count_element.is_visible():
-                                text_content = count_element.inner_text()
-                                numbers = re.findall(r'\d+', text_content)
-                                if numbers:
-                                    total_results = int(numbers[-1])
-                                    calculated_pages = math.ceil(total_results / 50)
-                                    max_pages_to_scan = calculated_pages
-                                    log(f"🧠 INTELLIGENCE : Trouvé {total_results} résultats -> Scan de {max_pages_to_scan} pages.")
-                        except Exception as e:
-                            log(f"⚠️ Impossible de lire le nombre total : {e}")
-                    # -----------------------------------------------
-
-                    try:
-                        page.wait_for_selector(".entreprise__card", timeout=10000)
-                    except:
-                        log(f"⚠️ Page {current_page} vide. Arrêt.")
-                        break
-
-                    cards = page.locator(".entreprise__card")
-                    count = cards.count()
+                    if offer_id in seen_ids: continue
+                    new_ids.add(offer_id)
                     
-                    if count == 0: break
+                    score, details = scorer(text)
+                    if score > 0:
+                        lines = text.split('\n')
+                        raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
+                        
+                        # Date extraction
+                        date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
+                        if "Date limite" in text and date_match:
+                            specific_match = re.search(r"Date limite.*?(\d{2}/\d{2}/\d{4})", text, re.DOTALL)
+                            deadline = specific_match.group(1) if specific_match else date_match.group(1)
+                        else:
+                            deadline = "Date inconnue"
 
-                    log(f"🔎 Analyse de {count} offres...")
+                        log(f"      ✅ PÉPITE! Score {score} ({details})")
+                        alerts.append(f"🚨 **ALERTE {details}** | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})")
+                except: continue
+            
+            time.sleep(2)
+            current_page += 1
 
-                    for i in range(count):
-                        try:
-                            text = cards.nth(i).inner_text()
-                            offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
-                            
-                            if offer_id in seen_ids: continue
-                            new_ids.add(offer_id)
-                            
-                            score, details = scorer(text)
-                            if score > 0:
-                                lines = text.split('\n')
-                                raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
-                                
-                                # --- EXTRACTION INTELLIGENTE DE LA DATE ---
-                                # On cherche une date au format JJ/MM/AAAA dans tout le texte
-                                # Le texte contient souvent "Date limite ... 26/01/2026"
-                                date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
-                                if "Date limite" in text and date_match:
-                                    # On essaie de trouver la date spécifiquement après "Date limite" si possible
-                                    specific_match = re.search(r"Date limite.*?(\d{2}/\d{2}/\d{4})", text, re.DOTALL)
-                                    deadline = specific_match.group(1) if specific_match else date_match.group(1)
-                                else:
-                                    deadline = "Date inconnue"
-                                # ------------------------------------------
+        browser.close()
 
-                                log(f"      ✅ PÉPITE (Page {current_page})! Score {score} ({details}) | Date: {deadline}")
-                                
-                                # Message Telegram avec la date en haut à droite
-                                alerts.append(f"🚨 **ALERTE {details}** | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})")
-                        except: continue
-                    
-                    time.sleep(2)
-                    current_page += 1
-
-                except Exception as e:
-                    log(f"❌ Erreur Page {current_page}: {e}")
-                    break
-
-            browser.close()
-
-        except Exception as e:
-            log(f"❌ Erreur Navigateur: {e}")
-            return
-
+    # Si on arrive ici, c'est que le scan s'est bien passé
     if new_ids:
         seen_ids.update(new_ids)
         save_seen(seen_ids)
@@ -197,12 +200,40 @@ def run_once():
             log(f"Ø {len(new_ids)} nouvelles offres vues.")
     else:
         log("Ø Rien de nouveau.")
+    
+    return True # Succès
+
+# --- GESTION DES RELANCES (La logique que tu as demandée) ---
+def run_with_retries():
+    MAX_RETRIES = 3
+    
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            log(f"🏁 Démarrage Scan (Tentative {attempt}/{MAX_RETRIES})...")
+            
+            # On lance le scan. Si ça plante, ça part dans "except Exception"
+            success = scan_attempt()
+            
+            if success:
+                return # Tout s'est bien passé, on sort de la boucle et on va dormir
+                
+        except Exception as e:
+            log(f"⚠️ ERREUR TENTATIVE {attempt} : {e}")
+            
+            if attempt < MAX_RETRIES:
+                wait_time = 60 # On attend 60 secondes avant de réessayer
+                log(f"⏳ Attente de {wait_time}s avant nouvelle tentative...")
+                time.sleep(wait_time)
+            else:
+                # C'était la dernière tentative
+                log("❌ ECHEC TOTAL après 3 tentatives.")
+                send_telegram(f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois de suite.\nErreur : {e}\nJe passe en mode pause 4h.")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Version avec Dates Limites)")
-    send_telegram("📅 Bot mis à jour : J'affiche maintenant la date limite des devis !")
+    log("🚀 Bot Démarré (Mode Robustesse 3 Essais)")
+    send_telegram("🛡️ Bot mis à jour : Je réessaie 3 fois avant de te déranger avec une erreur.")
     
     while True:
-        run_once()
-        log("💤 Pause de 4 heure...")
-        time.sleep(14400)
+        run_with_retries()
+        log("💤 Pause de 4 heures...")
+        time.sleep(14400) # 4 heures
