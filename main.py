@@ -22,24 +22,26 @@ KEYWORDS = {
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
     "Zakariya": [
-        "formation", "sessio n", "atelier", "renforcement de capacité", # Training
+        "formation", "session", "atelier", "renforcement de capacité", # Training
         "organisation", "animation", "événement", "sensibilisation",    # Events
-        "réception", "pause-café", "restauration", "traiteur",          # Catering (Basé sur l'offre 1)
-        "impression", "conception", "banderole", "flyer", "support",    # Print (Basé sur l'offre 7)
-        "enquête", "étude", "conseil agricole","conseil","agri"         # Consulting (Basé sur l'offre 8)
-        "réunion", 
+        "réception", "pause-café", "restauration", "traiteur",          # Catering
+        "impression", "conception", "banderole", "flyer", "support",    # Print
+        "enquête", "étude", "conseil agricole", "conseil", "agri",      # Consulting
+        "réunion"
     ]
 }
 
 # --- EXCLUSIONS ---
-# EXCLUSIONS = [
-#     "nettoyage", "gardiennage", "construction", 
-#     "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
-#     "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
-#     "espaces verts", "piscine", "vêtement", "habillement", "carburant",
-#     "véhicule", "transport", "billet d'avion", "hôtel", "hébergement des participants",
-#     "aménagement", "travaux", "voirie"
-# ]
+# J'ai décommenté cette liste car elle est OBLIGATOIRE pour la fonction scorer()
+# J'ai retiré les exclusions "traiteur/restauration" pour Zakariya
+EXCLUSIONS = [
+    "nettoyage", "gardiennage", "construction", 
+    "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
+    "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
+    "espaces verts", "piscine", "vêtement", "habillement", "carburant",
+    "véhicule", "transport", "billet d'avion", "hôtel", "hébergement des participants",
+    "aménagement", "travaux", "voirie"
+]
 
 def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -121,11 +123,9 @@ def scan_attempt():
                 f"page={current_page}"
             )
 
-            # C'est ICI que ça plante souvent. On ne met PAS de try/except global ici
-            # pour laisser l'erreur remonter si le chargement échoue totalement.
+            # Navigation
             page.goto(dynamic_url, timeout=90000, wait_until="commit")
             
-            # Attente intelligente
             try:
                 page.wait_for_selector("body", timeout=30000)
             except:
@@ -157,11 +157,21 @@ def scan_attempt():
             
             if count == 0: break
 
-            log(f"🔎 Analyse de {count} offres...")
+            log(f"🔎 Analyse de {count} offres en cours...")
 
             for i in range(count):
                 try:
                     text = cards.nth(i).inner_text()
+
+                    # --- AJOUT : Extraction et Affichage du Titre ---
+                    lines = text.split('\n')
+                    raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
+                    # On nettoie le titre pour l'affichage (enlève "Objet :" et coupe à 60 caractères)
+                    objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
+                    
+                    log(f"   📄 [{i+1}/{count}] {objet_clean}...")
+                    # ------------------------------------------------
+
                     offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
                     
                     if offer_id in seen_ids: continue
@@ -169,9 +179,6 @@ def scan_attempt():
                     
                     score, details = scorer(text)
                     if score > 0:
-                        lines = text.split('\n')
-                        raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
-                        
                         # Date extraction
                         date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
                         if "Date limite" in text and date_match:
@@ -203,7 +210,7 @@ def scan_attempt():
     
     return True # Succès
 
-# --- GESTION DES RELANCES (La logique que tu as demandée) ---
+# --- GESTION DES RELANCES ---
 def run_with_retries():
     MAX_RETRIES = 3
     
@@ -230,8 +237,8 @@ def run_with_retries():
                 send_telegram(f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois de suite.\nErreur : {e}\nJe passe en mode pause 4h.")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Mode Robustesse 3 Essais)")
-    send_telegram("🛡️ Bot mis à jour : Je réessaie 3 fois avant de te déranger avec une erreur.")
+    log("🚀 Bot Démarré (Mode Logs Détaillés + Robustesse)")
+    send_telegram("👀 Bot mis à jour : Je t'affiche tout ce que je lis dans les logs !")
     
     while True:
         run_with_retries()
