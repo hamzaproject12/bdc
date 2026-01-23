@@ -16,8 +16,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 KEYWORDS = {
     "Dév & Web": ["développement", "application", "web", "portail", "logiciel", "plateforme", "maintenance", "site internet", "app"],
-    "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique"],
-    "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau"]
+    "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement"],
+    "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique"]
 }
 
 # Liste d'exclusion
@@ -73,13 +73,13 @@ def run_once():
     new_ids = set()
     alerts = []
 
-    # Calcul des dates pour l'URL dynamique (Plus fiable que de cliquer)
+    # Calcul des dates pour l'URL dynamique
     today = datetime.now()
     future_date = today + timedelta(days=60)
     date_start = today.strftime("%Y-%m-%d")
     date_end = future_date.strftime("%Y-%m-%d")
 
-    # URL avec dates + Catégorie Services (3) + 50 résultats
+    # URL : Dates Dynamiques + Catégorie Services (3) + 50 résultats
     dynamic_url = (
         f"https://www.marchespublics.gov.ma/bdc/entreprise/consultation/?"
         f"search_consultation_entreprise%5BdateLimiteStart%5D={date_start}&"
@@ -110,32 +110,26 @@ def run_once():
                 try:
                     text = cards.nth(i).inner_text()
                     
-                    # --- NOUVEAUTÉ : On affiche le titre TOUT DE SUITE ---
+                    # --- LOGS DES TITRES ---
                     lines = text.split('\n')
-                    # On cherche la ligne qui contient "Objet" et on nettoie
                     raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
-                    # On garde juste les 60 premiers caractères pour que le log soit lisible
                     objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
                     
                     log(f"   📄 [{i+1}/{count}] {objet_clean}...")
-                    # -----------------------------------------------------
+                    # -----------------------
 
                     offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
                     
-                    if offer_id in seen_ids: 
-                        # On continue, mais on l'a affiché dans les logs juste avant, donc tu sais qu'il l'a vue
-                        continue
-                    
+                    if offer_id in seen_ids: continue
                     new_ids.add(offer_id)
+                    
                     score, details = scorer(text)
                     
                     if score > 0:
                         log(f"      ✅ PÉPITE ! Score {score} ({details})")
                         alerts.append(f"🚨 **ALERTE {details}** (Score {score})\n{raw_objet}\n[Voir l'offre]({dynamic_url})")
                     else:
-                        # Tu peux décommenter la ligne suivante si tu veux savoir POURQUOI c'est rejeté
-                        # log(f"      ❌ Rejeté : {details}")
-                        pass
+                        pass # log(f"      ❌ Rejeté : {details}")
                     
                 except Exception as e: continue
 
@@ -157,10 +151,10 @@ def run_once():
         log("Ø Rien de nouveau.")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Version Logs Détaillés)")
-    send_telegram("👀 Mode Espion activé : Je vois tout !")
+    log("🚀 Bot Démarré (Version Logs Détaillés + Dates)")
+    send_telegram("🚀 Mise à jour active : Logs détaillés et Dates Dynamiques !")
     
     while True:
         run_once()
-        log("💤 Pause de 2 minutes...")
+        log("💤 Pause de 1 heure...")
         time.sleep(120)
