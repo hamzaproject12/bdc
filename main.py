@@ -28,7 +28,7 @@ SUBSCRIBERS = [
     },
     {
         "name": "Zakariya",
-        "id": "7854053060",
+        "id": "8260779046",
         "subscriptions": ["Event & Formation"] # Uniquement cette catégorie
     }
 ]
