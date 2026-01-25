@@ -14,7 +14,12 @@ SEEN_FILE = os.path.join(DATA_PATH, "seen_offers.json")
 
 # Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# --- GESTION MULTI-UTILISATEURS (NOUVEAU) ---
+# On récupère la chaîne "ID1,ID2" et on crée une liste ["ID1", "ID2"]
+env_ids = os.getenv("TELEGRAM_CHAT_ID", "")
+# Sépare par virgule et enlève les espaces vides
+TELEGRAM_CHAT_IDS = [id.strip() for id in env_ids.split(",") if id.strip()]
 
 # --- MOTS-CLÉS ---
 KEYWORDS = {
@@ -48,10 +53,17 @@ def log(msg):
 def send_telegram(message):
     if not TELEGRAM_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"})
-    except Exception as e:
-        log(f"❌ Erreur Telegram: {e}")
+    
+    # BOUCLE : Envoie le message à CHAQUE ID trouvé dans la liste
+    if not TELEGRAM_CHAT_IDS:
+        log("⚠️ Aucun ID Telegram trouvé dans les variables !")
+        return
+
+    for chat_id in TELEGRAM_CHAT_IDS:
+        try:
+            requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+        except Exception as e:
+            log(f"❌ Erreur envoi Telegram vers {chat_id}: {e}")
 
 def load_seen():
     if not os.path.exists(DATA_PATH):
@@ -78,13 +90,12 @@ def scorer(text):
             
     return 0, "Pas de mots-clés"
 
-# --- CŒUR DU SYSTÈME : La fonction qui fait UN essai ---
+# --- CŒUR DU SYSTÈME ---
 def scan_attempt():
     seen_ids = load_seen()
     new_ids = set()
     
-    # On change la structure ici : on stocke des objets pour pouvoir trier
-    # Format : [{'score': 5, 'msg': "...", 'id': "..."}, ...]
+    # Liste temporaire pour le tri par score
     pending_alerts = [] 
 
     today = datetime.now()
@@ -93,6 +104,7 @@ def scan_attempt():
     date_end = future_date.strftime("%Y-%m-%d")
 
     with sync_playwright() as p:
+        # Configuration Anti-Bot
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -118,6 +130,7 @@ def scan_attempt():
                 f"page={current_page}"
             )
 
+            # Navigation robuste (commit = plus rapide que domcontentloaded)
             page.goto(dynamic_url, timeout=90000, wait_until="commit")
             
             try:
@@ -125,6 +138,7 @@ def scan_attempt():
             except:
                 raise Exception("Le site ne répond pas (Body introuvable)")
 
+            # Calcul Intelligent des pages (Uniquement page 1)
             if current_page == 1:
                 try:
                     time.sleep(2) 
@@ -155,7 +169,7 @@ def scan_attempt():
                 try:
                     text = cards.nth(i).inner_text()
 
-                    # Logs détaillés
+                    # Logs pour voir ce qu'il lit
                     lines = text.split('\n')
                     raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
                     objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
@@ -177,10 +191,9 @@ def scan_attempt():
 
                         log(f"      ✅ PÉPITE! Score {score} ({details})")
                         
-                        # Création du message
                         msg_text = f"🚨 **ALERTE {details}** (🎯 Score: {score}) | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})"
                         
-                        # On stocke l'ID et le message dans une liste temporaire pour trier plus tard
+                        # Ajout à la liste d'attente pour le tri
                         pending_alerts.append({
                             'score': score, 
                             'msg': msg_text,
@@ -194,20 +207,17 @@ def scan_attempt():
 
         browser.close()
 
-    # Si on a trouvé des pépites
+    # Envoi des messages (Triés par Score)
     if pending_alerts:
-        # --- TRI DU PLUS GRAND SCORE AU PLUS PETIT ---
+        # Tri du plus grand au plus petit
         pending_alerts.sort(key=lambda x: x['score'], reverse=True)
-        # ---------------------------------------------
         
         count_sent = 0
         for item in pending_alerts:
-            # On ajoute l'ID à la mémoire SEULEMENT maintenant (au cas où Telegram plante)
             new_ids.add(item['id'])
             send_telegram(item['msg'])
             count_sent += 1
         
-        # Mise à jour de la mémoire
         seen_ids.update(new_ids)
         save_seen(seen_ids)
         log(f"🚀 {count_sent} alertes envoyées (triées par score).")
@@ -217,7 +227,7 @@ def scan_attempt():
     
     return True 
 
-# --- GESTION DES RELANCES ---
+# --- GESTION DES RELANCES (Retry) ---
 def run_with_retries():
     MAX_RETRIES = 3
     
@@ -226,7 +236,7 @@ def run_with_retries():
             log(f"🏁 Démarrage Scan (Tentative {attempt}/{MAX_RETRIES})...")
             success = scan_attempt()
             if success:
-                return 
+                return # Succès, on sort
         except Exception as e:
             log(f"⚠️ ERREUR TENTATIVE {attempt} : {e}")
             if attempt < MAX_RETRIES:
@@ -238,8 +248,9 @@ def run_with_retries():
                 send_telegram(f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois de suite.\nErreur : {e}\nJe passe en mode pause 4h.")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Tri par Score + Affichage Score)")
-    send_telegram("🏆 Bot mis à jour : Les meilleures offres (Haut Score) s'affichent en premier !")
+    count_users = len(TELEGRAM_CHAT_IDS)
+    log(f"🚀 Bot Démarré ({count_users} destinataires configurés)")
+    send_telegram(f"👥 Bot mis à jour : J'envoie les alertes à {count_users} personnes maintenant !")
     
     while True:
         run_with_retries()
