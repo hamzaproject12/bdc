@@ -11,22 +11,36 @@ from playwright.sync_api import sync_playwright
 # --- CONFIGURATION ---
 DATA_PATH = "data"
 SEEN_FILE = os.path.join(DATA_PATH, "seen_offers.json")
-
-# Secrets
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# --- GESTION MULTI-UTILISATEURS (NOUVEAU) ---
-# On récupère la chaîne "ID1,ID2" et on crée une liste ["ID1", "ID2"]
-env_ids = os.getenv("TELEGRAM_CHAT_ID", "")
-# Sépare par virgule et enlève les espaces vides
-TELEGRAM_CHAT_IDS = [id.strip() for id in env_ids.split(",") if id.strip()]
+# --- 👥 CONFIGURATION DES UTILISATEURS (ROUTAGE) ---
+# C'est ici qu'on définit qui reçoit quoi !
+SUBSCRIBERS = [
+    {
+        "name": "Moi",
+        "id": "1952904877",
+        "subscriptions": ["ALL"] # "ALL" veut dire : Je reçois TOUT
+    },
+    {
+        "name": "Yassine",
+        "id": "6976053060",
+        "subscriptions": ["Event & Formation"] # Uniquement cette catégorie
+    },
+    {
+        "name": "Zakariya",
+        "id": "7854053060",
+        "subscriptions": ["Event & Formation"] # Uniquement cette catégorie
+    }
+]
 
 # --- MOTS-CLÉS ---
 KEYWORDS = {
     "Dév & Web": ["développement", "application", "web", "portail", "logiciel", "plateforme", "maintenance", "site internet", "app", "digital"],
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
-    "Zakariya": [
+    
+    # La catégorie pour Yassine et Zakariya
+    "Event & Formation": [
         "formation", "session", "atelier", "renforcement de capacité", # Training
         "organisation", "animation", "événement", "sensibilisation",    # Events
         "réception", "pause-café", "restauration", "traiteur",          # Catering
@@ -50,20 +64,14 @@ def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}")
 
-def send_telegram(message):
-    if not TELEGRAM_TOKEN: return
+# Fonction pour envoyer un message à une personne précise
+def send_telegram_to_user(chat_id, message):
+    if not TELEGRAM_TOKEN or not chat_id: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
-    # BOUCLE : Envoie le message à CHAQUE ID trouvé dans la liste
-    if not TELEGRAM_CHAT_IDS:
-        log("⚠️ Aucun ID Telegram trouvé dans les variables !")
-        return
-
-    for chat_id in TELEGRAM_CHAT_IDS:
-        try:
-            requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
-        except Exception as e:
-            log(f"❌ Erreur envoi Telegram vers {chat_id}: {e}")
+    try:
+        requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+    except Exception as e:
+        log(f"❌ Erreur envoi vers {chat_id}: {e}")
 
 def load_seen():
     if not os.path.exists(DATA_PATH):
@@ -84,6 +92,7 @@ def scorer(text):
         if not any(x in text_lower for x in ["web", "site", "cloud", "serveur", "plateforme", "logiciel", "données"]):
             return 0, "Exclu (Hébergement non-IT)"
 
+    # On retourne le score ET la catégorie trouvée
     for cat, mots in KEYWORDS.items():
         if any(mot in text_lower for mot in mots):
             return sum(1 for m in mots if m in text_lower), cat
@@ -95,7 +104,7 @@ def scan_attempt():
     seen_ids = load_seen()
     new_ids = set()
     
-    # Liste temporaire pour le tri par score
+    # Liste qui contient : {'score': X, 'msg': Y, 'recipients': [ID1, ID2], 'id': Z}
     pending_alerts = [] 
 
     today = datetime.now()
@@ -104,7 +113,6 @@ def scan_attempt():
     date_end = future_date.strftime("%Y-%m-%d")
 
     with sync_playwright() as p:
-        # Configuration Anti-Bot
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -130,7 +138,6 @@ def scan_attempt():
                 f"page={current_page}"
             )
 
-            # Navigation robuste (commit = plus rapide que domcontentloaded)
             page.goto(dynamic_url, timeout=90000, wait_until="commit")
             
             try:
@@ -138,7 +145,7 @@ def scan_attempt():
             except:
                 raise Exception("Le site ne répond pas (Body introuvable)")
 
-            # Calcul Intelligent des pages (Uniquement page 1)
+            # Calcul Pagination
             if current_page == 1:
                 try:
                     time.sleep(2) 
@@ -169,7 +176,7 @@ def scan_attempt():
                 try:
                     text = cards.nth(i).inner_text()
 
-                    # Logs pour voir ce qu'il lit
+                    # Logs
                     lines = text.split('\n')
                     raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
                     objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
@@ -179,8 +186,21 @@ def scan_attempt():
                     
                     if offer_id in seen_ids: continue
                     
-                    score, details = scorer(text)
+                    score, matched_category = scorer(text) 
+                    
                     if score > 0:
+                        # --- ROUTAGE INTELLIGENT ---
+                        # On cherche qui doit recevoir cette offre spécifique
+                        recipients = []
+                        for sub in SUBSCRIBERS:
+                            # Si l'utilisateur veut "ALL" OU s'il est abonné à la catégorie exacte
+                            if "ALL" in sub["subscriptions"] or matched_category in sub["subscriptions"]:
+                                recipients.append(sub["id"])
+                        
+                        # Si personne n'est intéressé, on ignore
+                        if not recipients:
+                            continue
+
                         # Extraction date
                         date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
                         if "Date limite" in text and date_match:
@@ -189,15 +209,15 @@ def scan_attempt():
                         else:
                             deadline = "Date inconnue"
 
-                        log(f"      ✅ PÉPITE! Score {score} ({details})")
+                        log(f"      ✅ PÉPITE! Score {score} ({matched_category}) -> Pour {len(recipients)} personne(s)")
                         
-                        msg_text = f"🚨 **ALERTE {details}** (🎯 Score: {score}) | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})"
+                        msg_text = f"🚨 **ALERTE {matched_category}** (🎯 Score: {score}) | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})"
                         
-                        # Ajout à la liste d'attente pour le tri
                         pending_alerts.append({
                             'score': score, 
                             'msg': msg_text,
-                            'id': offer_id
+                            'id': offer_id,
+                            'recipients': recipients 
                         })
                         
                 except: continue
@@ -209,25 +229,26 @@ def scan_attempt():
 
     # Envoi des messages (Triés par Score)
     if pending_alerts:
-        # Tri du plus grand au plus petit
         pending_alerts.sort(key=lambda x: x['score'], reverse=True)
         
         count_sent = 0
         for item in pending_alerts:
             new_ids.add(item['id'])
-            send_telegram(item['msg'])
+            # Envoi ciblé
+            for user_id in item['recipients']:
+                send_telegram_to_user(user_id, item['msg'])
             count_sent += 1
         
         seen_ids.update(new_ids)
         save_seen(seen_ids)
-        log(f"🚀 {count_sent} alertes envoyées (triées par score).")
+        log(f"🚀 {count_sent} alertes traitées et distribuées.")
         
     else:
         log("Ø Rien de nouveau.")
     
     return True 
 
-# --- GESTION DES RELANCES (Retry) ---
+# --- GESTION DES RELANCES ---
 def run_with_retries():
     MAX_RETRIES = 3
     
@@ -236,7 +257,7 @@ def run_with_retries():
             log(f"🏁 Démarrage Scan (Tentative {attempt}/{MAX_RETRIES})...")
             success = scan_attempt()
             if success:
-                return # Succès, on sort
+                return 
         except Exception as e:
             log(f"⚠️ ERREUR TENTATIVE {attempt} : {e}")
             if attempt < MAX_RETRIES:
@@ -245,14 +266,16 @@ def run_with_retries():
                 time.sleep(wait_time)
             else:
                 log("❌ ECHEC TOTAL après 3 tentatives.")
-                send_telegram(f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois de suite.\nErreur : {e}\nJe passe en mode pause 4h.")
+                # Envoi erreur seulement à TOI (Moi)
+                my_id = "1952904877"
+                send_telegram_to_user(my_id, f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois.\nErreur: {e}")
 
 if __name__ == "__main__":
-    count_users = len(TELEGRAM_CHAT_IDS)
-    log(f"🚀 Bot Démarré ({count_users} destinataires configurés)")
-    send_telegram(f"👥 Bot mis à jour : J'envoie les alertes à {count_users} personnes maintenant !")
+    log("🚀 Bot Démarré (Moi=Tout, Yassine/Zak=Event)")
+    # Petit message de test au démarrage pour toi
+    send_telegram_to_user("1952904877", "🚦 Bot redémarré : Je surveille tout pour toi, et l'Event pour Yassine & Zakariya !")
     
     while True:
         run_with_retries()
         log("💤 Pause de 4 heures...")
-        time.sleep(14400) # 4 heures
+        time.sleep(14400)
