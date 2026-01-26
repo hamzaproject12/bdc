@@ -241,12 +241,13 @@ def scan_attempt():
                             # Design Standard
                             log(f"      ✅ Pépite standard ({matched_category})")
                             msg_text = (
-                                f"🚜 **URGENT SPÉCIAL AGRI** 🚜\n"
-                                f"➖➖➖➖➖➖➖➖➖➖\n"
-                                f"🎯 **Sujet :** {matched_category} (Score {score})\n"
-                                f"⏳ **Limite :** `{deadline_str}`\n\n"
+                                f"🚜🌾 **SPÉCIAL CONSEIL AGRICOLE** 🌾🚜\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🏛️ *Sujet :* {matched_category} (Score {score})\n"
+                                f"📅 *Limite :* `{deadline_str}`\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
                                 f"{raw_objet}\n\n"
-                                f"🔗 [Ouvrir l'offre directe]({final_link})"
+                                f"🔗 [VOIR L'OFFRE MAINTENANT]({final_link})"
                             )
                         
                         pending_alerts.append({
