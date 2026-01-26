@@ -13,23 +13,22 @@ DATA_PATH = "data"
 SEEN_FILE = os.path.join(DATA_PATH, "seen_offers.json")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# --- 👥 CONFIGURATION DES UTILISATEURS (ROUTAGE) ---
-# C'est ici qu'on définit qui reçoit quoi !
+# --- 👥 CONFIGURATION DES ABONNÉS ---
 SUBSCRIBERS = [
     {
         "name": "Moi",
         "id": "1952904877",
-        "subscriptions": ["ALL"] # "ALL" veut dire : Je reçois TOUT
+        "subscriptions": ["ALL"] # Tu reçois tout
     },
     {
         "name": "Yassine",
         "id": "6976053060",
-        "subscriptions": ["Event & Formation"] # Uniquement cette catégorie
+        "subscriptions": ["Event & Formation"] 
     },
     {
         "name": "Zakariya",
-        "id": "8260779046",
-        "subscriptions": ["Event & Formation"] # Uniquement cette catégorie
+        "id": "7854053060", # J'ai mis l'ID que tu as donné dans le texte
+        "subscriptions": ["Event & Formation"] 
     }
 ]
 
@@ -39,13 +38,13 @@ KEYWORDS = {
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
     
-    # La catégorie pour Yassine et Zakariya
+    # Catégorie partagée Yassine & Zakariya
     "Event & Formation": [
-        "formation", "session", "atelier", "renforcement de capacité", # Training
-        "organisation", "animation", "événement", "sensibilisation",    # Events
-        "réception", "pause-café", "restauration", "traiteur",          # Catering
-        "impression", "conception", "banderole", "flyer", "support",    # Print
-        "enquête", "étude", "conseil agricole", "conseil", "agri",      # Consulting
+        "formation", "session", "atelier", "renforcement de capacité", 
+        "organisation", "animation", "événement", "sensibilisation",    
+        "réception", "pause-café", "restauration", "traiteur",          
+        "impression", "conception", "banderole", "flyer", "support",    
+        "enquête", "étude", "conseil agricole", "conseil", "agri",      
         "réunion"
     ]
 }
@@ -64,12 +63,11 @@ def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}")
 
-# Fonction pour envoyer un message à une personne précise
 def send_telegram_to_user(chat_id, message):
     if not TELEGRAM_TOKEN or not chat_id: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+        requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True})
     except Exception as e:
         log(f"❌ Erreur envoi vers {chat_id}: {e}")
 
@@ -92,7 +90,6 @@ def scorer(text):
         if not any(x in text_lower for x in ["web", "site", "cloud", "serveur", "plateforme", "logiciel", "données"]):
             return 0, "Exclu (Hébergement non-IT)"
 
-    # On retourne le score ET la catégorie trouvée
     for cat, mots in KEYWORDS.items():
         if any(mot in text_lower for mot in mots):
             return sum(1 for m in mots if m in text_lower), cat
@@ -103,8 +100,6 @@ def scorer(text):
 def scan_attempt():
     seen_ids = load_seen()
     new_ids = set()
-    
-    # Liste qui contient : {'score': X, 'msg': Y, 'recipients': [ID1, ID2], 'id': Z}
     pending_alerts = [] 
 
     today = datetime.now()
@@ -128,7 +123,7 @@ def scan_attempt():
         while current_page <= max_pages_to_scan:
             log(f"📄 [PAGE {current_page}/{max_pages_to_scan}] Chargement...")
 
-            dynamic_url = (
+            search_url = (
                 f"https://www.marchespublics.gov.ma/bdc/entreprise/consultation/?"
                 f"search_consultation_entreprise%5BdateLimiteStart%5D={date_start}&"
                 f"search_consultation_entreprise%5BdateLimiteEnd%5D={date_end}&"
@@ -138,14 +133,13 @@ def scan_attempt():
                 f"page={current_page}"
             )
 
-            page.goto(dynamic_url, timeout=90000, wait_until="commit")
+            page.goto(search_url, timeout=90000, wait_until="commit")
             
             try:
                 page.wait_for_selector("body", timeout=30000)
             except:
-                raise Exception("Le site ne répond pas (Body introuvable)")
+                raise Exception("Le site ne répond pas")
 
-            # Calcul Pagination
             if current_page == 1:
                 try:
                     time.sleep(2) 
@@ -162,118 +156,148 @@ def scan_attempt():
             try:
                 page.wait_for_selector(".entreprise__card", timeout=15000)
             except:
-                log(f"⚠️ Page {current_page} semble vide. Arrêt normal.")
+                log(f"⚠️ Page {current_page} vide.")
                 break
 
             cards = page.locator(".entreprise__card")
             count = cards.count()
-            
             if count == 0: break
 
-            log(f"🔎 Analyse de {count} offres en cours...")
+            log(f"🔎 Analyse de {count} offres...")
 
             for i in range(count):
                 try:
-                    text = cards.nth(i).inner_text()
+                    card_element = cards.nth(i)
+                    text = card_element.inner_text()
 
-                    # Logs
+                    # 1. Extraction du Titre
                     lines = text.split('\n')
                     raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
                     objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
                     log(f"   📄 [{i+1}/{count}] {objet_clean}...")
 
+                    # 2. Check Déjà vu
                     offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
-                    
                     if offer_id in seen_ids: continue
                     
+                    # 3. Score & Catégorie
                     score, matched_category = scorer(text) 
                     
                     if score > 0:
-                        # --- ROUTAGE INTELLIGENT ---
-                        # On cherche qui doit recevoir cette offre spécifique
+                        # 4. Ciblage
                         recipients = []
                         for sub in SUBSCRIBERS:
-                            # Si l'utilisateur veut "ALL" OU s'il est abonné à la catégorie exacte
                             if "ALL" in sub["subscriptions"] or matched_category in sub["subscriptions"]:
                                 recipients.append(sub["id"])
                         
-                        # Si personne n'est intéressé, on ignore
-                        if not recipients:
-                            continue
+                        if not recipients: continue
 
-                        # Extraction date
-                        date_match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
-                        if "Date limite" in text and date_match:
-                            specific_match = re.search(r"Date limite.*?(\d{2}/\d{2}/\d{4})", text, re.DOTALL)
-                            deadline = specific_match.group(1) if specific_match else date_match.group(1)
-                        else:
-                            deadline = "Date inconnue"
+                        # 5. Extraction DATE ET HEURE (Amélioré)
+                        # On cherche un pattern JJ/MM/AAAA suivi éventuellement de HH:MM
+                        deadline_str = "Date inconnue"
+                        # Regex pour capturer la date ET l'heure qui est souvent sur la ligne d'après ou à côté
+                        # On cherche d'abord la section "Date limite"
+                        if "Date limite" in text:
+                            # On capture tout ce qui ressemble à une date et une heure
+                            full_date_match = re.search(r"(\d{2}/\d{2}/\d{4})(?:\s+|\n+)(\d{2}:\d{2})", text)
+                            if full_date_match:
+                                d_date = full_date_match.group(1)
+                                d_time = full_date_match.group(2)
+                                deadline_str = f"{d_date} à {d_time}"
+                            else:
+                                # Si pas d'heure, juste la date
+                                simple_date = re.search(r"(\d{2}/\d{2}/\d{4})", text)
+                                if simple_date:
+                                    deadline_str = simple_date.group(1)
 
-                        log(f"      ✅ PÉPITE! Score {score} ({matched_category}) -> Pour {len(recipients)} personne(s)")
+                        # 6. Extraction LIEN DIRECT (Amélioré)
+                        # On cherche la balise <a> dans la carte pour avoir le vrai lien
+                        final_link = search_url # Fallback
+                        try:
+                            link_element = card_element.locator("a").first
+                            href = link_element.get_attribute("href")
+                            if href:
+                                if href.startswith("http"):
+                                    final_link = href
+                                else:
+                                    final_link = f"https://www.marchespublics.gov.ma{href}"
+                        except: pass
+
+                        # 7. DESIGN SPÉCIAL "CONSEIL AGRI"
+                        is_agri_special = "conseil agri" in text.lower() or "conseil agricole" in text.lower()
                         
-                        msg_text = f"🚨 **ALERTE {matched_category}** (🎯 Score: {score}) | ⏳ {deadline}\n{raw_objet}\n[Lien Offre]({dynamic_url})"
+                        if is_agri_special:
+                            # Design Spécial AGRI
+                            log(f"      🚜 PÉPITE AGRI DÉTECTÉE !")
+                            msg_text = (
+                                f"🚜 **URGENT SPÉCIAL AGRI** 🚜\n"
+                                f"➖➖➖➖➖➖➖➖➖➖\n"
+                                f"🎯 **Sujet :** {matched_category} (Score {score})\n"
+                                f"⏳ **Limite :** `{deadline_str}`\n\n"
+                                f"{raw_objet}\n\n"
+                                f"🔗 [Ouvrir l'offre directe]({final_link})"
+                            )
+                        else:
+                            # Design Standard
+                            log(f"      ✅ Pépite standard ({matched_category})")
+                            msg_text = (
+                                f"🚨 **ALERTE {matched_category}**\n"
+                                f"⏳ {deadline_str} | 🎯 Score: {score}\n\n"
+                                f"{raw_objet}\n\n"
+                                f"🔗 [Voir l'offre]({final_link})"
+                            )
                         
                         pending_alerts.append({
-                            'score': score, 
+                            'score': score + (100 if is_agri_special else 0), # On booste le score agri pour qu'il soit en premier
                             'msg': msg_text,
                             'id': offer_id,
                             'recipients': recipients 
                         })
                         
-                except: continue
+                except Exception as e: 
+                    log(f"❌ Erreur lecture carte: {e}")
+                    continue
             
             time.sleep(2)
             current_page += 1
 
         browser.close()
 
-    # Envoi des messages (Triés par Score)
     if pending_alerts:
         pending_alerts.sort(key=lambda x: x['score'], reverse=True)
-        
         count_sent = 0
         for item in pending_alerts:
             new_ids.add(item['id'])
-            # Envoi ciblé
             for user_id in item['recipients']:
                 send_telegram_to_user(user_id, item['msg'])
             count_sent += 1
         
         seen_ids.update(new_ids)
         save_seen(seen_ids)
-        log(f"🚀 {count_sent} alertes traitées et distribuées.")
-        
+        log(f"🚀 {count_sent} alertes traitées.")
     else:
         log("Ø Rien de nouveau.")
     
     return True 
 
-# --- GESTION DES RELANCES ---
 def run_with_retries():
     MAX_RETRIES = 3
-    
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log(f"🏁 Démarrage Scan (Tentative {attempt}/{MAX_RETRIES})...")
             success = scan_attempt()
-            if success:
-                return 
+            if success: return 
         except Exception as e:
             log(f"⚠️ ERREUR TENTATIVE {attempt} : {e}")
             if attempt < MAX_RETRIES:
-                wait_time = 60 
-                log(f"⏳ Attente de {wait_time}s avant nouvelle tentative...")
-                time.sleep(wait_time)
+                time.sleep(60)
             else:
-                log("❌ ECHEC TOTAL après 3 tentatives.")
-                # Envoi erreur seulement à TOI (Moi)
-                my_id = "1952904877"
-                send_telegram_to_user(my_id, f"❌ **ALERTE TECHNIQUE BOT**\nLe scan a échoué 3 fois.\nErreur: {e}")
+                log("❌ ECHEC TOTAL.")
+                send_telegram_to_user(SUBSCRIBERS[0]["id"], f"❌ Crash Bot: {e}")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (Moi=Tout, Yassine/Zak=Event)")
-    # Petit message de test au démarrage pour toi
-    send_telegram_to_user("1952904877", "🚦 Bot redémarré : Je surveille tout pour toi, et l'Event pour Yassine & Zakariya !")
+    log("🚀 Bot Démarré (V3: Heure exacte, Vrai lien, Spécial Agri)")
+    send_telegram_to_user(SUBSCRIBERS[0]["id"], "🚜 Bot Agri-Special V3 en ligne !")
     
     while True:
         run_with_retries()
