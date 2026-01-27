@@ -27,7 +27,7 @@ SUBSCRIBERS = [
     },
     {
         "name": "Zakariya",
-        "id": "7854053060", # J'ai mis l'ID que tu as donné dans le texte
+        "id": "8260779046", # J'ai mis l'ID que tu as donné dans le texte
         "subscriptions": ["Event & Formation"] 
     }
 ]
