@@ -223,11 +223,22 @@ def scan_attempt():
                                     final_link = f"https://www.marchespublics.gov.ma{href}"
                         except: pass
 
-                        # 7. DESIGN SPÉCIAL "CONSEIL AGRI"
-                        is_agri_special = "conseil agri" in text.lower() or "conseil agricole" in text.lower()
+                        # 7. DESIGN SPÉCIAL (AGRI ou VILLE)
+                        text_lower = text.lower()
                         
-                        if is_agri_special:
-                            # Design Spécial AGRI
+                        # Détection Agri
+                        is_agri = "conseil agri" in text_lower or "conseil agricole" in text_lower
+                        
+                        # Détection Villes (J'ai ajouté "tafilalet" avec T aussi pour être sûr)
+                        target_cities = ["errachidia", "ouarzazate", "tafilalel", "tafilalet"]
+                        found_city = next((city for city in target_cities if city in text_lower), None)
+
+                        # --- CHOIX DU DESIGN ---
+                        msg_text = ""
+                        is_special = False
+
+                        if is_agri:
+                            is_special = True
                             log(f"      🚜 PÉPITE AGRI DÉTECTÉE !")
                             msg_text = (
                                 f"🚨🚜🌾 **CONSEIL AGRICOLE** 🌾🚜🚨\n"
@@ -238,6 +249,22 @@ def scan_attempt():
                                 f"{raw_objet}\n\n"
                                 f"🔗 [VOIR L'OFFRE MAINTENANT]({final_link})"
                             )
+
+                        elif found_city:
+                            is_special = True
+                            city_upper = found_city.upper()
+                            log(f"      📍 PÉPITE RÉGION DÉTECTÉE ({city_upper}) !")
+                            # Design Spécial VILLE (Emoji Désert/Map)
+                            msg_text = (
+                                f"🚨📍🏜️ **ALERTE ZONE : {city_upper}** 🏜️📍🚨\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🏛️ *Sujet :* {matched_category} (Score {score})\n"
+                                f"📅 *Limite :* `{deadline_str}`\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"{raw_objet}\n\n"
+                                f"🔗 [VOIR L'OFFRE MAINTENANT]({final_link})"
+                            )
+
                         else:
                             # Design Standard
                             log(f"      ✅ Pépite standard ({matched_category})")
@@ -249,7 +276,8 @@ def scan_attempt():
                             )
                         
                         pending_alerts.append({
-                            'score': score + (100 if is_agri_special else 0), # On booste le score agri pour qu'il soit en premier
+                            # On booste le score (+100) si c'est Agri OU si c'est une Ville spéciale
+                            'score': score + (100 if is_special else 0), 
                             'msg': msg_text,
                             'id': offer_id,
                             'recipients': recipients 
