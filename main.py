@@ -39,18 +39,16 @@ KEYWORDS = {
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
     
     "Event & Formation": [
-        "formation", "session", "atelier", "renforcement de capacité", 
-        "organisation", "animation", "événement", "sensibilisation",    
-        "réception", "pause-café", "restauration", "traiteur",          
-        "impression", "conception", "banderole", "flyer", "support",    
-        "enquête", "étude", "conseil agricole", "conseil", "agri",      
-        "réunion"
+        "formation", "atelier", "renforcement de capacité", 
+        "organisation", "animation", "sensibilisation",          
+        "impression", "conception",    
+        "enquête", "étude", "conseil agricole", "conseil", "agri"
     ]
 }
 
 # --- EXCLUSIONS (Mise à jour selon tes demandes) ---
 EXCLUSIONS = [
-    "nettoyage", "gardiennage", "construction", 
+    "nettoyage", "gardiennage", "construction", "location"
     "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
     "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
     "espaces verts", "piscine", "vêtement", "habillement",
