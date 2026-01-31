@@ -18,16 +18,16 @@ SUBSCRIBERS = [
     {
         "name": "Moi",
         "id": "1952904877",
-        "subscriptions": ["ALL"] # Tu reçois tout
+        "subscriptions": ["ALL"] 
     },
     {
         "name": "Yassine",
-        "id": "6976053060",
+        "id": "7879373928",
         "subscriptions": ["Event & Formation"] 
     },
     {
         "name": "Zakariya",
-        "id": "8260779046", # J'ai mis l'ID que tu as donné dans le texte
+        "id": "8260779046", 
         "subscriptions": ["Event & Formation"] 
     }
 ]
@@ -38,7 +38,6 @@ KEYWORDS = {
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
     
-    # Catégorie partagée Yassine & Zakariya
     "Event & Formation": [
         "formation", "session", "atelier", "renforcement de capacité", 
         "organisation", "animation", "événement", "sensibilisation",    
@@ -49,14 +48,18 @@ KEYWORDS = {
     ]
 }
 
-# --- EXCLUSIONS ---
+# --- EXCLUSIONS (Mise à jour selon tes demandes) ---
 EXCLUSIONS = [
     "nettoyage", "gardiennage", "construction", 
     "fournitures de bureau", "mobilier", "siège", "chaise", "bâtiment", "plomberie",
     "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
-    "espaces verts", "piscine", "vêtement", "habillement", "carburant",
-    "véhicule", "transport", "billet d'avion", "hôtel", "hébergement des participants",
-    "aménagement", "travaux", "voirie"
+    "espaces verts", "piscine", "vêtement", "habillement",
+    "aménagement", "travaux", "voirie", 
+    
+    # NOUVELLES EXCLUSIONS
+    "topographique", "topographie", 
+    "billet", "billetterie", "aérien",
+    "ensam", "faculte", "faculté", "université", "école supérieure","ecole superieure"
 ]
 
 def log(msg):
@@ -83,13 +86,31 @@ def save_seen(seen_set):
 
 def scorer(text):
     text_lower = text.lower()
+    
+    # 1. Vérification des EXCLUSIONS STRICTES
     for exc in EXCLUSIONS:
         if exc in text_lower: return 0, f"Exclu ({exc})"
             
+    # 2. Exclusion hébergement (non-IT)
     if "hébergement" in text_lower:
         if not any(x in text_lower for x in ["web", "site", "cloud", "serveur", "plateforme", "logiciel", "données"]):
             return 0, "Exclu (Hébergement non-IT)"
 
+    # 3. LOGIQUE SPÉCIALE : IMPRESSION SANS FORMATION
+    # Si on trouve des mots d'impression mais PAS de mots de formation -> POUBELLE
+    print_words = ["impression", "banderole", "flyer", "imprimerie"]
+    training_words = ["formation", "session", "atelier", "renforcement", "sensibilisation"]
+    
+    # Est-ce que c'est une offre d'impression ?
+    if any(p in text_lower for p in print_words):
+        # Est-ce qu'il y a de la formation dedans ?
+        has_training = any(t in text_lower for t in training_words)
+        
+        # Si impression MAIS PAS formation => On exclut
+        if not has_training:
+            return 0, "Exclu (Impression seule)"
+
+    # 4. Calcul du score normal
     for cat, mots in KEYWORDS.items():
         if any(mot in text_lower for mot in mots):
             return sum(1 for m in mots if m in text_lower), cat
@@ -170,21 +191,18 @@ def scan_attempt():
                     card_element = cards.nth(i)
                     text = card_element.inner_text()
 
-                    # 1. Extraction du Titre
                     lines = text.split('\n')
                     raw_objet = next((l for l in lines if "Objet" in l), "Objet inconnu")
                     objet_clean = raw_objet.replace("Objet :", "").replace("\n", "").strip()[:60]
                     log(f"   📄 [{i+1}/{count}] {objet_clean}...")
 
-                    # 2. Check Déjà vu
                     offer_id = hashlib.md5(text.encode('utf-8')).hexdigest()
                     if offer_id in seen_ids: continue
                     
-                    # 3. Score & Catégorie
+                    # --- NOUVELLE LOGIQUE SCORER ---
                     score, matched_category = scorer(text) 
                     
                     if score > 0:
-                        # 4. Ciblage
                         recipients = []
                         for sub in SUBSCRIBERS:
                             if "ALL" in sub["subscriptions"] or matched_category in sub["subscriptions"]:
@@ -192,48 +210,31 @@ def scan_attempt():
                         
                         if not recipients: continue
 
-                        # 5. Extraction DATE ET HEURE (Amélioré)
-                        # On cherche un pattern JJ/MM/AAAA suivi éventuellement de HH:MM
+                        # Extraction Date/Heure
                         deadline_str = "Date inconnue"
-                        # Regex pour capturer la date ET l'heure qui est souvent sur la ligne d'après ou à côté
-                        # On cherche d'abord la section "Date limite"
                         if "Date limite" in text:
-                            # On capture tout ce qui ressemble à une date et une heure
                             full_date_match = re.search(r"(\d{2}/\d{2}/\d{4})(?:\s+|\n+)(\d{2}:\d{2})", text)
                             if full_date_match:
-                                d_date = full_date_match.group(1)
-                                d_time = full_date_match.group(2)
-                                deadline_str = f"{d_date} à {d_time}"
+                                deadline_str = f"{full_date_match.group(1)} à {full_date_match.group(2)}"
                             else:
-                                # Si pas d'heure, juste la date
                                 simple_date = re.search(r"(\d{2}/\d{2}/\d{4})", text)
-                                if simple_date:
-                                    deadline_str = simple_date.group(1)
+                                if simple_date: deadline_str = simple_date.group(1)
 
-                        # 6. Extraction LIEN DIRECT (Amélioré)
-                        # On cherche la balise <a> dans la carte pour avoir le vrai lien
-                        final_link = search_url # Fallback
+                        # Extraction Lien
+                        final_link = search_url 
                         try:
-                            link_element = card_element.locator("a").first
-                            href = link_element.get_attribute("href")
+                            href = card_element.locator("a").first.get_attribute("href")
                             if href:
-                                if href.startswith("http"):
-                                    final_link = href
-                                else:
-                                    final_link = f"https://www.marchespublics.gov.ma{href}"
+                                final_link = href if href.startswith("http") else f"https://www.marchespublics.gov.ma{href}"
                         except: pass
 
-                        # 7. DESIGN SPÉCIAL (AGRI ou VILLE)
+                        # --- DESIGN SPÉCIAL ---
                         text_lower = text.lower()
-                        
-                        # Détection Agri
                         is_agri = "conseil agri" in text_lower or "conseil agricole" in text_lower
                         
-                        # Détection Villes (J'ai ajouté "tafilalet" avec T aussi pour être sûr)
-                        target_cities = ["errachidia", "ouarzazate", "tafilalel", "tafilalet"]
+                        target_cities = ["errachidia", "ouarzazate", "tafilalel", "tafilalet", "midelt"]
                         found_city = next((city for city in target_cities if city in text_lower), None)
 
-                        # --- CHOIX DU DESIGN ---
                         msg_text = ""
                         is_special = False
 
@@ -254,7 +255,6 @@ def scan_attempt():
                             is_special = True
                             city_upper = found_city.upper()
                             log(f"      📍 PÉPITE RÉGION DÉTECTÉE ({city_upper}) !")
-                            # Design Spécial VILLE (Emoji Désert/Map)
                             msg_text = (
                                 f"🚨📍🏜️ **ALERTE ZONE : {city_upper}** 🏜️📍🚨\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -266,7 +266,6 @@ def scan_attempt():
                             )
 
                         else:
-                            # Design Standard
                             log(f"      ✅ Pépite standard ({matched_category})")
                             msg_text = (
                                 f"🚨 **ALERTE {matched_category}**\n"
@@ -276,7 +275,6 @@ def scan_attempt():
                             )
                         
                         pending_alerts.append({
-                            # On booste le score (+100) si c'est Agri OU si c'est une Ville spéciale
                             'score': score + (100 if is_special else 0), 
                             'msg': msg_text,
                             'id': offer_id,
@@ -325,8 +323,8 @@ def run_with_retries():
                 send_telegram_to_user(SUBSCRIBERS[0]["id"], f"❌ Crash Bot: {e}")
 
 if __name__ == "__main__":
-    log("🚀 Bot Démarré (V3: Heure exacte, Vrai lien, Spécial Agri)")
-    send_telegram_to_user(SUBSCRIBERS[0]["id"], "🚜 Bot Agri-Special V3 en ligne !")
+    log("🚀 Bot Démarré (V4: Filtrage Avancé ENSAM/Impression)")
+    send_telegram_to_user(SUBSCRIBERS[0]["id"], "🧹 Bot mis à jour : Je filtre les tickets, l'ENSAM et l'impression seule !")
     
     while True:
         run_with_retries()
