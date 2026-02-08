@@ -164,7 +164,7 @@ def scan_attempt():
 
     if pending_alerts:
         # Tri par score pour envoyer les meilleures offres en premier
-        pending_alerts.sort(key=lambda x: x['score'], reverse=True)
+        pending_alerts.sort(key=lambda x: x['score'])
         for item in pending_alerts:
             new_ids.add(item['id'])
             for uid in item['recipients']: send_telegram_to_user(uid, item['msg'])
