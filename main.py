@@ -4,7 +4,7 @@ import requests
 import hashlib
 import os
 import math 
-import re    
+import re     
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
@@ -16,8 +16,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 # --- 👥 CONFIGURATION DES ABONNÉS ---
 SUBSCRIBERS = [
     {"name": "Moi", "id": "1952904877", "subscriptions": ["ALL"]},
-    {"name": "Yassine", "id": "7879373928", "subscriptions": ["Event & Formation"]},
-    {"name": "Zakariya", "id": "8260779046", "subscriptions": ["Event & Formation"]}
+    # {"name": "Yassine", "id": "7879373928", "subscriptions": ["Event & Formation"]},
+    # {"name": "Zakariya", "id": "8260779046", "subscriptions": ["Event & Formation"]}
 ]
 
 # --- MOTS-CLÉS ---
@@ -55,7 +55,7 @@ def load_seen():
     except: return set()
 
 def save_seen(seen_set):
-    # On ne garde que les 2000 derniers IDs pour économiser la RAM sur le long terme
+    # On limite à 2000 entrées pour ne pas saturer la RAM avec le fichier JSON
     list_ids = list(seen_set)[-2000:]
     with open(SEEN_FILE, "w") as f: json.dump(list_ids, f)
 
@@ -89,16 +89,15 @@ def scan_attempt():
     date_end = (today + timedelta(days=60)).strftime("%Y-%m-%d")
 
     with sync_playwright() as p:
-        # --- OPTIMISATION LANCEMENT (RAM) ---
+        # OPTIMISATION RAM : Paramètres de lancement légers
         browser = p.chromium.launch(headless=True, args=[
             "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", 
             "--disable-gpu", "--single-process", "--no-zygote"
         ])
-        # Viewport réduit pour consommer moins de mémoire
-        context = browser.new_context(viewport={"width": 1024, "height": 768})
+        context = browser.new_context(viewport={"width": 800, "height": 600})
         page = context.new_page()
 
-        # --- BLOCAGE RESSOURCES INUTILES (Gain RAM majeur) ---
+        # OPTIMISATION RAM : Bloquer les images et le CSS
         page.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,font}", lambda route: route.abort())
 
         log(f"🌍 Scan Période : {date_start} -> {date_end}")
@@ -128,17 +127,19 @@ def scan_attempt():
                     card = cards.nth(i)
                     full_text = card.inner_text()
                     
-                    # Identifiant unique basé sur le texte de l'offre
                     offer_id = hashlib.md5(full_text.encode('utf-8')).hexdigest()
                     if offer_id in seen_ids: continue
 
                     score, category = scorer(full_text)
                     if score > 0:
-                        # Extraction propre via sélecteurs basés sur votre HTML
+                        # --- EXTRACTION DATA ---
                         objet = card.locator(".entreprise__middleSubCard a").nth(1).inner_text().replace("Objet :", "").strip()
                         ref = card.locator(".entreprise__middleSubCard a").nth(0).inner_text().strip()
-                        date_limite = card.locator(".entreprise__rightSubCard--top .font-bold").first.inner_text().strip()
-                        lieu = card.locator(".entreprise__rightSubCard--top .font-bold").last.inner_text().strip()
+                        
+                        # Extraction Date et Heure précises
+                        date_elements = card.locator(".entreprise__rightSubCard--top .font-bold")
+                        date_limite = f"{date_elements.nth(0).inner_text().strip()} à {date_elements.nth(1).inner_text().strip()}"
+                        lieu = date_elements.last.inner_text().strip()
                         
                         link_attr = card.locator(".entreprise__middleSubCard a").first.get_attribute("href")
                         link = f"https://www.marchespublics.gov.ma{link_attr}"
@@ -146,7 +147,6 @@ def scan_attempt():
                         recipients = [s["id"] for s in SUBSCRIBERS if "ALL" in s["subscriptions"] or category in s["subscriptions"]]
                         if not recipients: continue
 
-                        # Tags spéciaux
                         t_lower = full_text.lower()
                         is_special = any(c in t_lower for c in ["errachidia", "ouarzazate", "midelt", "tafilalet"]) or "conseil agri" in t_lower
                         
@@ -163,7 +163,8 @@ def scan_attempt():
         browser.close()
 
     if pending_alerts:
-        pending_alerts.sort(key=lambda x: x['score'])
+        # Tri par score pour envoyer les meilleures offres en premier
+        pending_alerts.sort(key=lambda x: x['score'], reverse=True)
         for item in pending_alerts:
             new_ids.add(item['id'])
             for uid in item['recipients']: send_telegram_to_user(uid, item['msg'])
@@ -185,6 +186,6 @@ def run_loop():
         time.sleep(14400)
 
 if __name__ == "__main__":
-    log("🚀 Bot V4.1 (Optimisé RAM & HTML)")
-    send_telegram_to_user(SUBSCRIBERS[0]["id"], "✅ Bot redémarré en mode basse consommation (RAM).")
+    log("🚀 Bot V4.2 (RAM optimisée + Date/Heure corrigées)")
+    send_telegram_to_user(SUBSCRIBERS[0]["id"], "✅ Bot opérationnel : Optimisation RAM et affichage de l'heure activés.")
     run_loop()
