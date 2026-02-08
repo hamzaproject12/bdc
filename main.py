@@ -153,7 +153,7 @@ def scan_attempt():
                         emoji = "🚜🌾" if "agri" in t_lower else "📍🏜️" if is_special else "🚨"
                         title = "PÉPITE DÉTECTÉE" if is_special else f"ALERTE {category}"
 
-                        msg = f"{emoji} **{title}**\n━━━━━━━━━━━━\n🎯 Score: {score}\n📅 Limite: `{date_limite}`\n📍 Lieu: `{lieu}`\n━━━━━━━━━━━━\n{ref}\nObjet: {objet}...\n\n🔗 [Voir l'offre]({link})"
+                        msg = f"{emoji} **{title}**\n━━━━━━━━━━━━\n🎯 Score: {score}\n📅 Limite: `{date_limite}`\n📍 Lieu: `{lieu}`\n━━━━━━━━━━━━\n{ref}\nObjet: {objet}\n\n🔗 [Voir l'offre]({link})"
                         
                         pending_alerts.append({'score': score + (100 if is_special else 0), 'msg': msg, 'id': offer_id, 'recipients': recipients})
                 except Exception as e:
@@ -163,7 +163,7 @@ def scan_attempt():
         browser.close()
 
     if pending_alerts:
-        pending_alerts.sort(key=lambda x: x['score'], reverse=True)
+        pending_alerts.sort(key=lambda x: x['score'])
         for item in pending_alerts:
             new_ids.add(item['id'])
             for uid in item['recipients']: send_telegram_to_user(uid, item['msg'])
