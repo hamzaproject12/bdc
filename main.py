@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 # --- 👥 CONFIGURATION DES ABONNÉS ---
 SUBSCRIBERS = [
     {"name": "Moi", "id": "1952904877", "subscriptions": ["ALL"]},
-    {"name": "Moi", "id": "7943145340", "subscriptions": ["ALL"]},
+    {"name": "Abdeslam", "id": "7943145340", "subscriptions": ["Mdiq"]},
     {"name": "Yassine", "id": "7879373928", "subscriptions": ["Event & Formation"]},
     {"name": "Zakariya", "id": "8260779046", "subscriptions": ["Event & Formation"]}
 ]
@@ -26,7 +26,8 @@ KEYWORDS = {
     "Dév & Web": ["développement", "application", "web", "portail", "logiciel", "plateforme", "maintenance", "site internet", "app", "digital"],
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
-    "Event & Formation": ["formation", "atelier", "renforcement de capacité", "organisation", "animation", "sensibilisation", "impression", "conception", "enquête", "étude", "conseil agricole", "conseil", "agri"]
+    "Event & Formation": ["formation", "atelier", "renforcement de capacité", "organisation", "animation", "sensibilisation", "impression", "conception", "enquête", "étude", "conseil agricole", "conseil", "agri"],
+    "Mdiq":["mdiq","MDIQ-FNIDEQ", "MEDIAQ","MDIQ FNIDEQ","Sante","GST"]
 }
 
 # --- EXCLUSIONS ---
