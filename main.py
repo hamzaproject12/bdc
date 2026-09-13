@@ -16,9 +16,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 # --- 👥 CONFIGURATION DES ABONNÉS ---
 SUBSCRIBERS = [
     {"name": "Moi", "id": "1952904877", "subscriptions": ["ALL"]},
-    {"name": "Abdeslam", "id": "7943145340", "subscriptions": ["Mdiq"]},
-    {"name": "Yassine", "id": "7879373928", "subscriptions": ["Event & Formation"]},
-    {"name": "Zakariya", "id": "8260779046", "subscriptions": ["Event & Formation"]}
+    # {"name": "Abdeslam", "id": "7943145340", "subscriptions": ["Mdiq"]},
+    # {"name": "Yassine", "id": "7879373928", "subscriptions": ["Event & Formation"]},
+    # {"name": "Zakariya", "id": "8260779046", "subscriptions": ["Event & Formation"]}
 ]
 
 # --- MOTS-CLÉS ---
