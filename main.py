@@ -3,8 +3,8 @@ import json
 import requests
 import hashlib
 import os
-import math 
-import re     
+import math
+import re
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
@@ -13,12 +13,22 @@ DATA_PATH = "data"
 SEEN_FILE = os.path.join(DATA_PATH, "seen_offers.json")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
+# --- WHATSAPP CLOUD API ---
+WA_TOKEN = os.getenv("WA_TOKEN")
+WA_PHONE_ID = os.getenv("WA_PHONE_ID", "1318151618051403")
+WA_TEMPLATE = os.getenv("WA_TEMPLATE", "alerte_marche_public")
+WA_LANG = os.getenv("WA_LANG", "fr")
+WA_API_VERSION = os.getenv("WA_API_VERSION", "v25.0")
+
 # --- 👥 CONFIGURATION DES ABONNÉS ---
+# whatsapp : format international SANS "+" ni espaces (ex 212700301878)
+# Le numero doit etre dans la liste des destinataires de test tant que
+# l'app est en mode developpement (5 max).
 SUBSCRIBERS = [
-    {"name": "Moi", "id": "1952904877", "subscriptions": ["ALL"]},
-    # {"name": "Abdeslam", "id": "7943145340", "subscriptions": ["Mdiq"]},
-    # {"name": "Yassine", "id": "7879373928", "subscriptions": ["Event & Formation"]},
-    # {"name": "Zakariya", "id": "8260779046", "subscriptions": ["Event & Formation"]}
+    {"name": "Moi", "id": "1952904877", "whatsapp": "212700301878", "subscriptions": ["ALL"]},
+    # {"name": "Abdeslam", "id": "7943145340", "whatsapp": None, "subscriptions": ["Mdiq"]},
+    # {"name": "Yassine", "id": "7879373928", "whatsapp": None, "subscriptions": ["Event & Formation"]},
+    # {"name": "Zakariya", "id": "8260779046", "whatsapp": None, "subscriptions": ["Event & Formation"]}
 ]
 
 # --- MOTS-CLÉS ---
@@ -27,45 +37,133 @@ KEYWORDS = {
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
     "Event & Formation": ["formation", "atelier", "renforcement de capacité", "organisation", "animation", "sensibilisation", "impression", "conception", "enquête", "étude", "conseil agricole", "conseil", "agri"],
-    "Mdiq":["mdiq","MDIQ-FNIDEQ", "MEDIAQ","MDIQ FNIDEQ","Sante","GST"]
+    "Mdiq": ["mdiq", "MDIQ-FNIDEQ", "MEDIAQ", "MDIQ FNIDEQ", "Sante", "GST"]
 }
 
 # --- EXCLUSIONS ---
 EXCLUSIONS = [
-    "nettoyage", "gardiennage", "construction", "location", "fournitures de bureau", "mobilier", "siège", "chaise", 
+    "nettoyage", "gardiennage", "construction", "location", "fournitures de bureau", "mobilier", "siège", "chaise",
     "bâtiment", "plomberie", "sanitaire", "toilette", "douche", "peinture", "électricité", "jardinage",
-    "espaces verts", "piscine", "vêtement", "habillement", "aménagement", "travaux", "voirie", "topographique", 
+    "espaces verts", "piscine", "vêtement", "habillement", "aménagement", "travaux", "voirie", "topographique",
     "topographie", "billet", "billetterie", "aérien", "ensam", "faculte", "faculté", "université", "école supérieure", "ecole superieure"
 ]
 
+
 def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] {msg}")
+    print(f"[{timestamp}] {msg}", flush=True)
 
+
+# =========================================================
+#                      TELEGRAM
+# =========================================================
 def send_telegram_to_user(chat_id, message):
-    if not TELEGRAM_TOKEN or not chat_id: return
+    if not TELEGRAM_TOKEN or not chat_id:
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown", "disable_web_page_preview": True})
+        r = requests.post(url, data={
+            "chat_id": chat_id, "text": message,
+            "parse_mode": "Markdown", "disable_web_page_preview": True
+        }, timeout=20)
+        if r.status_code >= 400:
+            log(f"❌ Telegram {chat_id}: {r.text[:150]}")
+            return False
+        return True
     except Exception as e:
-        log(f"❌ Erreur envoi vers {chat_id}: {e}")
+        log(f"❌ Erreur envoi Telegram vers {chat_id}: {e}")
+        return False
 
-def load_seen():
-    if not os.path.exists(DATA_PATH): os.makedirs(DATA_PATH, exist_ok=True)
+
+# =========================================================
+#                      WHATSAPP
+# =========================================================
+def wa_clean(text, max_len=280):
+    """Les parametres de template WhatsApp interdisent sauts de ligne,
+    tabulations et espaces multiples."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    return t[:max_len] if t else "-"
+
+
+def send_whatsapp(to, params):
+    """Envoie le template WhatsApp. params = liste dans l'ordre {{1}}..{{6}}"""
+    if not (WA_TOKEN and WA_PHONE_ID and to):
+        return False
+    url = f"https://graph.facebook.com/{WA_API_VERSION}/{WA_PHONE_ID}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": str(to),
+        "type": "template",
+        "template": {
+            "name": WA_TEMPLATE,
+            "language": {"code": WA_LANG},
+            "components": [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": wa_clean(p)} for p in params]
+            }]
+        }
+    }
     try:
-        with open(SEEN_FILE, "r") as f: return set(json.load(f))
-    except: return set()
+        r = requests.post(url, json=payload, headers={
+            "Authorization": f"Bearer {WA_TOKEN}",
+            "Content-Type": "application/json"
+        }, timeout=25)
+        if r.status_code >= 400:
+            code = ""
+            try:
+                code = r.json().get("error", {}).get("code", "")
+            except Exception:
+                pass
+            hints = {
+                132001: "template introuvable (nom ou langue incorrects, ou pas encore approuve)",
+                132000: "nombre de parametres different du template",
+                131030: "numero absent de la liste des destinataires de test",
+                190: "token invalide ou expire",
+            }
+            log(f"❌ WhatsApp {to}: {code} {hints.get(code, r.text[:200])}")
+            return False
+        return True
+    except Exception as e:
+        log(f"❌ Erreur envoi WhatsApp vers {to}: {e}")
+        return False
+
+
+def notify(sub, telegram_msg, wa_params):
+    """Envoie la meme alerte sur les deux canaux de l'abonne."""
+    if sub.get("id"):
+        send_telegram_to_user(sub["id"], telegram_msg)
+    if sub.get("whatsapp"):
+        send_whatsapp(sub["whatsapp"], wa_params)
+
+
+# =========================================================
+#                      PERSISTANCE
+# =========================================================
+def load_seen():
+    if not os.path.exists(DATA_PATH):
+        os.makedirs(DATA_PATH, exist_ok=True)
+    try:
+        with open(SEEN_FILE, "r") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
 
 def save_seen(seen_set):
-    # On limite à 2000 entrées pour ne pas saturer la RAM avec le fichier JSON
     list_ids = list(seen_set)[-2000:]
-    with open(SEEN_FILE, "w") as f: json.dump(list_ids, f)
+    with open(SEEN_FILE, "w") as f:
+        json.dump(list_ids, f)
 
+
+# =========================================================
+#                       SCORING
+# =========================================================
 def scorer(text):
     text_lower = text.lower()
     for exc in EXCLUSIONS:
-        if exc in text_lower: return 0, f"Exclu ({exc})"
-    
+        if exc in text_lower:
+            return 0, f"Exclu ({exc})"
+
     if "hébergement" in text_lower:
         if not any(x in text_lower for x in ["web", "site", "cloud", "serveur", "plateforme", "logiciel", "données"]):
             return 0, "Exclu (Hébergement non-IT)"
@@ -81,36 +179,37 @@ def scorer(text):
             return sum(1 for m in mots if m in text_lower), cat
     return 0, "Pas de mots-clés"
 
+
+# =========================================================
+#                        SCAN
+# =========================================================
 def scan_attempt():
     seen_ids = load_seen()
     new_ids = set()
-    pending_alerts = [] 
+    pending_alerts = []
 
     today = datetime.now()
     date_start = today.strftime("%Y-%m-%d")
     date_end = (today + timedelta(days=60)).strftime("%Y-%m-%d")
 
     with sync_playwright() as p:
-        # OPTIMISATION RAM : Paramètres de lancement légers
         browser = p.chromium.launch(headless=True, args=[
-            "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", 
+            "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
             "--disable-gpu", "--single-process", "--no-zygote"
         ])
         context = browser.new_context(viewport={"width": 800, "height": 600})
         page = context.new_page()
-
-        # OPTIMISATION RAM : Bloquer les images et le CSS
         page.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,font}", lambda route: route.abort())
 
         log(f"🌍 Scan Période : {date_start} -> {date_end}")
-        max_pages = 1 
+        max_pages = 1
         current_page = 1
 
         while current_page <= max_pages:
             search_url = f"https://www.marchespublics.gov.ma/bdc/entreprise/consultation/?search_consultation_entreprise%5BdateLimiteStart%5D={date_start}&search_consultation_entreprise%5BdateLimiteEnd%5D={date_end}&search_consultation_entreprise%5Bcategorie%5D=3&search_consultation_entreprise%5BpageSize%5D=50&search_consultation_entreprise%5Bpage%5D={current_page}&page={current_page}"
-            
+
             page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
-            
+
             if current_page == 1:
                 try:
                     res_text = page.locator(".content__resultat").inner_text()
@@ -118,7 +217,8 @@ def scan_attempt():
                     if num:
                         max_pages = math.ceil(int(num.group()) / 50)
                         log(f"🧠 Total : {num.group()} offres ({max_pages} pages)")
-                except: pass
+                except Exception:
+                    pass
 
             page.wait_for_selector(".entreprise__card", timeout=10000)
             cards = page.locator(".entreprise__card")
@@ -128,54 +228,66 @@ def scan_attempt():
                 try:
                     card = cards.nth(i)
                     full_text = card.inner_text()
-                    
+
                     offer_id = hashlib.md5(full_text.encode('utf-8')).hexdigest()
-                    if offer_id in seen_ids: continue
+                    if offer_id in seen_ids:
+                        continue
 
                     score, category = scorer(full_text)
                     if score > 0:
-                        # --- EXTRACTION DATA ---
                         objet = card.locator(".entreprise__middleSubCard a").nth(1).inner_text().replace("Objet :", "").strip()
                         ref = card.locator(".entreprise__middleSubCard a").nth(0).inner_text().strip()
-                        
-                        # Extraction Date et Heure précises
+
                         date_elements = card.locator(".entreprise__rightSubCard--top .font-bold")
                         date_limite = f"{date_elements.nth(0).inner_text().strip()} à {date_elements.nth(1).inner_text().strip()}"
                         lieu = date_elements.last.inner_text().strip()
-                        
+
                         link_attr = card.locator(".entreprise__middleSubCard a").first.get_attribute("href")
                         link = f"https://www.marchespublics.gov.ma{link_attr}"
 
-                        recipients = [s["id"] for s in SUBSCRIBERS if "ALL" in s["subscriptions"] or category in s["subscriptions"]]
-                        if not recipients: continue
+                        recipients = [s for s in SUBSCRIBERS
+                                      if "ALL" in s["subscriptions"] or category in s["subscriptions"]]
+                        if not recipients:
+                            continue
 
                         t_lower = full_text.lower()
                         is_special = any(c in t_lower for c in ["errachidia", "ouarzazate", "midelt", "tafilalet"]) or "conseil agri" in t_lower
-                        
+
                         emoji = "🚜🌾" if "agri" in t_lower else "📍🏜️" if is_special else "🚨"
                         title = "PÉPITE DÉTECTÉE" if is_special else f"ALERTE {category}"
 
                         msg = f"{emoji} **{title}**\n━━━━━━━━━━━━\n🎯 Score: {score}\n📅 Limite: `{date_limite}`\n📍 Lieu: `{lieu}`\n━━━━━━━━━━━━\n{ref}\nObjet: {objet}\n\n🔗 [Voir l'offre]({link})"
-                        
-                        pending_alerts.append({'score': score + (100 if is_special else 0), 'msg': msg, 'id': offer_id, 'recipients': recipients})
-                except Exception as e:
+
+                        # Parametres WhatsApp {{1}} a {{6}}
+                        wa_params = [title, ref, objet, date_limite, lieu, link]
+
+                        pending_alerts.append({
+                            'score': score + (100 if is_special else 0),
+                            'msg': msg,
+                            'wa_params': wa_params,
+                            'id': offer_id,
+                            'recipients': recipients
+                        })
+                except Exception:
                     continue
-            
+
             current_page += 1
         browser.close()
 
     if pending_alerts:
-        # Tri par score pour envoyer les meilleures offres en premier
         pending_alerts.sort(key=lambda x: x['score'])
         for item in pending_alerts:
             new_ids.add(item['id'])
-            for uid in item['recipients']: send_telegram_to_user(uid, item['msg'])
+            for sub in item['recipients']:
+                notify(sub, item['msg'], item['wa_params'])
+                time.sleep(0.5)
         seen_ids.update(new_ids)
         save_seen(seen_ids)
         log(f"🚀 {len(pending_alerts)} alertes envoyées.")
     else:
         log("Ø Rien de nouveau.")
     return True
+
 
 def run_loop():
     while True:
@@ -187,7 +299,10 @@ def run_loop():
         log("💤 Sommeil (4h)...")
         time.sleep(14400)
 
+
 if __name__ == "__main__":
-    log("🚀 Bot V4.2 (RAM optimisée + Date/Heure corrigées)")
-    send_telegram_to_user(SUBSCRIBERS[0]["id"], "✅ Bot opérationnel : Optimisation RAM et affichage de l'heure activés.")
+    log("🚀 Bot V5.0 (Telegram + WhatsApp)")
+    if not WA_TOKEN:
+        log("⚠️ WA_TOKEN absent : WhatsApp desactive, Telegram seul.")
+    send_telegram_to_user(SUBSCRIBERS[0]["id"], "✅ Bot opérationnel : Telegram + WhatsApp.")
     run_loop()
