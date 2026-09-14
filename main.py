@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
 # --- CONFIGURATION ---
-DATA_PATH = "data"
+DATA_PATH = os.getenv("DATA_PATH", "data")
 SEEN_FILE = os.path.join(DATA_PATH, "seen_offers.json")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
@@ -19,17 +19,22 @@ WA_PHONE_ID = os.getenv("WA_PHONE_ID", "1318151618051403")
 WA_TEMPLATE = os.getenv("WA_TEMPLATE", "alerte_marche_public")
 WA_LANG = os.getenv("WA_LANG", "fr")
 WA_API_VERSION = os.getenv("WA_API_VERSION", "v25.0")
+# Mettre WA_TEST=1 dans Railway pour envoyer un WhatsApp de controle au demarrage
+WA_TEST = os.getenv("WA_TEST", "0") == "1"
+
+# --- ⏱️ RYTHME ---
+SLEEP_OK = 14400       # 4h apres un scan reussi
+SLEEP_FAIL = 900       # 15 min apres un echec
 
 # --- 👥 CONFIGURATION DES ABONNÉS ---
 # whatsapp : format international SANS "+" ni espaces (ex 212700301878)
 # Le numero doit etre dans la liste des destinataires de test tant que
-# l'app est en mode developpement (5 max).
+# l'app Meta est en mode developpement (5 numeros max).
 SUBSCRIBERS = [
     {"name": "Moi", "id": "1952904877", "whatsapp": "212700301878", "subscriptions": ["ALL"]},
+    {"name": "Zakariya", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation"]},
     # {"name": "Abdeslam", "id": "7943145340", "whatsapp": None, "subscriptions": ["Mdiq"]},
     # {"name": "Yassine", "id": "7879373928", "whatsapp": None, "subscriptions": ["Event & Formation"]},
-    # {"name": "Zakariya", "id": "8260779046", "whatsapp": None, "subscriptions": ["Event & Formation"]}
-    {"name": "Zakariya", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation"]},
 ]
 
 # --- MOTS-CLÉS ---
@@ -48,6 +53,9 @@ EXCLUSIONS = [
     "espaces verts", "piscine", "vêtement", "habillement", "aménagement", "travaux", "voirie", "topographique",
     "topographie", "billet", "billetterie", "aérien", "ensam", "faculte", "faculté", "université", "école supérieure", "ecole superieure"
 ]
+
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 
 def log(msg):
@@ -116,10 +124,12 @@ def send_whatsapp(to, params):
             except Exception:
                 pass
             hints = {
-                132001: "template introuvable (nom ou langue incorrects, ou pas encore approuve)",
+                132001: "template introuvable (nom/langue incorrects ou pas encore approuve)",
                 132000: "nombre de parametres different du template",
                 131030: "numero absent de la liste des destinataires de test",
+                131047: "hors fenetre 24h (il faut un template, pas du texte libre)",
                 190: "token invalide ou expire",
+                200: "permission manquante sur le token",
             }
             log(f"❌ WhatsApp {to}: {code} {hints.get(code, r.text[:200])}")
             return False
@@ -145,15 +155,21 @@ def load_seen():
         os.makedirs(DATA_PATH, exist_ok=True)
     try:
         with open(SEEN_FILE, "r") as f:
-            return set(json.load(f))
+            data = json.load(f)
+            log(f"🧾 Historique charge : {len(data)} offres deja vues")
+            return list(data)
     except Exception:
-        return set()
+        log("🧾 Aucun historique trouve (premier lancement ou volume absent)")
+        return []
 
 
-def save_seen(seen_set):
-    list_ids = list(seen_set)[-2000:]
+def save_seen(seen_list):
+    """On garde une LISTE pour conserver l'ordre : la troncature supprime
+    alors les plus anciennes, et non des entrees au hasard."""
+    if not os.path.exists(DATA_PATH):
+        os.makedirs(DATA_PATH, exist_ok=True)
     with open(SEEN_FILE, "w") as f:
-        json.dump(list_ids, f)
+        json.dump(seen_list[-2000:], f)
 
 
 # =========================================================
@@ -185,8 +201,8 @@ def scorer(text):
 #                        SCAN
 # =========================================================
 def scan_attempt():
-    seen_ids = load_seen()
-    new_ids = set()
+    seen_list = load_seen()
+    seen_ids = set(seen_list)
     pending_alerts = []
 
     today = datetime.now()
@@ -198,7 +214,12 @@ def scan_attempt():
             "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
             "--disable-gpu", "--single-process", "--no-zygote"
         ])
-        context = browser.new_context(viewport={"width": 800, "height": 600})
+        context = browser.new_context(
+            viewport={"width": 800, "height": 600},
+            user_agent=USER_AGENT,
+            locale="fr-FR",
+            extra_http_headers={"Accept-Language": "fr-FR,fr;q=0.9"}
+        )
         page = context.new_page()
         page.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,font}", lambda route: route.abort())
 
@@ -209,7 +230,21 @@ def scan_attempt():
         while current_page <= max_pages:
             search_url = f"https://www.marchespublics.gov.ma/bdc/entreprise/consultation/?search_consultation_entreprise%5BdateLimiteStart%5D={date_start}&search_consultation_entreprise%5BdateLimiteEnd%5D={date_end}&search_consultation_entreprise%5Bcategorie%5D=3&search_consultation_entreprise%5BpageSize%5D=50&search_consultation_entreprise%5Bpage%5D={current_page}&page={current_page}"
 
-            page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
+            # 3 tentatives avant d'abandonner : le site est parfois tres lent
+            loaded = False
+            for attempt in range(1, 4):
+                try:
+                    page.goto(search_url, timeout=120000, wait_until="domcontentloaded")
+                    loaded = True
+                    break
+                except Exception as e:
+                    log(f"⏳ Tentative {attempt}/3 echouee page {current_page} : {str(e)[:80]}")
+                    time.sleep(10)
+
+            if not loaded:
+                log(f"❌ Page {current_page} inaccessible, scan interrompu.")
+                browser.close()
+                return False
 
             if current_page == 1:
                 try:
@@ -221,7 +256,13 @@ def scan_attempt():
                 except Exception:
                     pass
 
-            page.wait_for_selector(".entreprise__card", timeout=10000)
+            try:
+                page.wait_for_selector(".entreprise__card", timeout=15000)
+            except Exception:
+                log(f"⚠️ Aucune carte trouvee sur la page {current_page}")
+                current_page += 1
+                continue
+
             cards = page.locator(".entreprise__card")
             count = cards.count()
 
@@ -278,12 +319,11 @@ def scan_attempt():
     if pending_alerts:
         pending_alerts.sort(key=lambda x: x['score'])
         for item in pending_alerts:
-            new_ids.add(item['id'])
+            seen_list.append(item['id'])
             for sub in item['recipients']:
                 notify(sub, item['msg'], item['wa_params'])
                 time.sleep(0.5)
-        seen_ids.update(new_ids)
-        save_seen(seen_ids)
+        save_seen(seen_list)
         log(f"🚀 {len(pending_alerts)} alertes envoyées.")
     else:
         log("Ø Rien de nouveau.")
@@ -292,18 +332,35 @@ def scan_attempt():
 
 def run_loop():
     while True:
+        ok = False
         try:
             log("🏁 Démarrage du scan...")
-            scan_attempt()
+            ok = scan_attempt()
         except Exception as e:
             log(f"⚠️ Erreur: {e}")
-        log("💤 Sommeil (4h)...")
-        time.sleep(14400)
+        delay = SLEEP_OK if ok else SLEEP_FAIL
+        log(f"💤 Sommeil ({delay // 60} min)...")
+        time.sleep(delay)
 
 
 if __name__ == "__main__":
-    log("🚀 Bot V5.0 (Telegram + WhatsApp)")
+    log("🚀 Bot V5.1 (Telegram + WhatsApp, retry reseau)")
+
     if not WA_TOKEN:
         log("⚠️ WA_TOKEN absent : WhatsApp desactive, Telegram seul.")
+
+    if not os.path.exists(SEEN_FILE):
+        log("⚠️ Pas d'historique : si aucun volume n'est monte sur "
+            f"'{os.path.abspath(DATA_PATH)}', les offres seront renvoyees en double.")
+
     send_telegram_to_user(SUBSCRIBERS[0]["id"], "✅ Bot opérationnel : Telegram + WhatsApp.")
+
+    if WA_TEST and SUBSCRIBERS[0].get("whatsapp"):
+        log("🧪 Envoi du WhatsApp de controle...")
+        ok = send_whatsapp(SUBSCRIBERS[0]["whatsapp"], [
+            "TEST DEMARRAGE", "AO-TEST-001", "Verification du canal WhatsApp",
+            "01/01/2027 a 10:00", "Rabat", "https://www.marchespublics.gov.ma"
+        ])
+        log("🧪 Resultat : " + ("OK ✅" if ok else "ECHEC ❌ (voir erreur ci-dessus)"))
+
     run_loop()
