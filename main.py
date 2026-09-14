@@ -29,6 +29,7 @@ SUBSCRIBERS = [
     # {"name": "Abdeslam", "id": "7943145340", "whatsapp": None, "subscriptions": ["Mdiq"]},
     # {"name": "Yassine", "id": "7879373928", "whatsapp": None, "subscriptions": ["Event & Formation"]},
     # {"name": "Zakariya", "id": "8260779046", "whatsapp": None, "subscriptions": ["Event & Formation"]}
+    {"name": "Zakariya", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation"]},
 ]
 
 # --- MOTS-CLÉS ---
