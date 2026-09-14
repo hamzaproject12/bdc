@@ -301,7 +301,8 @@ def scan_attempt():
                         msg = f"{emoji} **{title}**\n━━━━━━━━━━━━\n🎯 Score: {score}\n📅 Limite: `{date_limite}`\n📍 Lieu: `{lieu}`\n━━━━━━━━━━━━\n{ref}\nObjet: {objet}\n\n🔗 [Voir l'offre]({link})"
 
                         # Parametres WhatsApp {{1}} a {{6}}
-                        wa_params = [title, ref, objet, date_limite, lieu, link]
+                        #wa_params = [title, ref, objet, date_limite, lieu, link]
+                        wa_params = [f"{title} · Score {score}", ref, objet, date_limite, lieu, link]
 
                         pending_alerts.append({
                             'score': score + (100 if is_special else 0),
