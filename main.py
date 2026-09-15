@@ -32,7 +32,8 @@ SLEEP_FAIL = 900       # 15 min apres un echec
 # l'app Meta est en mode developpement (5 numeros max).
 SUBSCRIBERS = [
     {"name": "Moi", "id": "1952904877", "whatsapp": "212700301878", "subscriptions": ["ALL"]},
-    {"name": "Zakariya", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation"]},
+    {"name": "Zakariya", "id": "8260779046", "whatsapp": "212660576019", "subscriptions": ["Event & Formation"]},
+    {"name": "Hamza", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation"]},
     # {"name": "Abdeslam", "id": "7943145340", "whatsapp": None, "subscriptions": ["Mdiq"]},
     # {"name": "Yassine", "id": "7879373928", "whatsapp": None, "subscriptions": ["Event & Formation"]},
 ]
