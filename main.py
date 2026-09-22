@@ -192,11 +192,18 @@ def scorer(text):
         if not any(t in text_lower for t in training_words):
             return 0, "Exclu (Impression seule)"
 
+    # for cat, mots in KEYWORDS.items():
+    #     if any(mot in text_lower for mot in mots):
+    #         return sum(1 for m in mots if m in text_lower), cat
+    # return 0, "Pas de mots-clés"
     for cat, mots in KEYWORDS.items():
-        if any(mot in text_lower for mot in mots):
-            return sum(1 for m in mots if m in text_lower), cat
+        score_actuel = sum(1 for m in mots if m in text_lower)
+        
+        # Règle stricte pour Event (>= 2), mais 1 suffit pour le reste
+        if score_actuel >= 2 or (score_actuel == 1 and cat != "Event & Formation"):
+            return score_actuel, cat
+            
     return 0, "Pas de mots-clés"
-
 
 # =========================================================
 #                        SCAN
