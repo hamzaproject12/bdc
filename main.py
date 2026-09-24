@@ -5,6 +5,7 @@ import hashlib
 import os
 import math
 import re
+from functools import lru_cache
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
@@ -21,19 +22,27 @@ WA_LANG = os.getenv("WA_LANG", "fr")
 WA_API_VERSION = os.getenv("WA_API_VERSION", "v25.0")
 # Mettre WA_TEST=1 dans Railway pour envoyer un WhatsApp de controle au demarrage
 WA_TEST = os.getenv("WA_TEST", "0") == "1"
+# Mettre DEBUG_SCORING=1 pour voir dans les logs pourquoi chaque offre passe ou non
+DEBUG_SCORING = os.getenv("DEBUG_SCORING", "0") == "1"
 
 # --- ⏱️ RYTHME ---
 SLEEP_OK = 14400       # 4h apres un scan reussi
 SLEEP_FAIL = 900       # 15 min apres un echec
 
+# --- 🎯 SEUILS ---
+SEUIL_EVENT = 2        # Event & Formation : au moins 2 mots-cles (trop de bruit sinon)
+SEUIL_DEFAUT = 1       # Les autres categories : 1 mot-cle suffit
+# Les pepites passent TOUJOURS, meme avec un score de 0.
+
 # --- 👥 CONFIGURATION DES ABONNÉS ---
 # whatsapp : format international SANS "+" ni espaces (ex 212700301878)
 # Le numero doit etre dans la liste des destinataires de test tant que
 # l'app Meta est en mode developpement (5 numeros max).
+# "Pépite" ajoute aux subscriptions = recoit aussi les pepites hors categorie.
 SUBSCRIBERS = [
     {"name": "Moi", "id": "1952904877", "whatsapp": "212700301878", "subscriptions": ["ALL"]},
-    {"name": "Zakariya", "id": "8260779046", "whatsapp": "212660576019", "subscriptions": ["Event & Formation"]},
-    {"name": "Hamza", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation"]},
+    #{"name": "Zakariya", "id": "8260779046", "whatsapp": "212660576019", "subscriptions": ["Event & Formation", "Pépite"]},
+    {"name": "Hamza", "id": "8260779046", "whatsapp": "212665803935", "subscriptions": ["Event & Formation", "Pépite"]},
     # {"name": "Abdeslam", "id": "7943145340", "whatsapp": None, "subscriptions": ["Mdiq"]},
     # {"name": "Yassine", "id": "7879373928", "whatsapp": None, "subscriptions": ["Event & Formation"]},
 ]
@@ -43,9 +52,21 @@ KEYWORDS = {
     "Dév & Web": ["développement", "application", "web", "portail", "logiciel", "plateforme", "maintenance", "site internet", "app", "digital"],
     "Data": ["données", "data", "numérisation", "archivage", "ged", "big data", "statistique", "traitement", "ia"],
     "Infra": ["hébergement", "cloud", "maintenance", "sécurité", "serveur", "réseau", "informatique", "matériel informatique"],
-    "Event & Formation": ["formation", "atelier", "renforcement de capacité", "organisation", "animation", "sensibilisation", "impression", "conception", "enquête", "étude", "conseil agricole", "conseil", "agri"],
+    "Event & Formation": ["accompagnement","encadrement","formation", "atelier", "renforcement de capacité", "organisation", "animation", "sensibilisation", "impression", "conception", "enquête", "étude", "conseil agricole", "conseil", "agri"],
     "Mdiq": ["mdiq", "MDIQ-FNIDEQ", "MEDIAQ", "MDIQ FNIDEQ", "Sante", "GST"]
 }
+
+# --- 🔤 MOTS À MATCHER EXACTEMENT ---
+# Par defaut un mot-cle matche en PREFIXE : "agri" attrape "agricole",
+# "agriculture", "agriculteur". C'est voulu.
+# MAIS les acronymes courts ci-dessous doivent etre des mots ISOLES, sinon :
+#   "app" attraperait "appel" (present dans "appel d'offres" => toutes les annonces)
+#   "ia"  attraperait "special", "materiaux", "financiaire"...
+#   "ged" attraperait "budget"... (non, mais "gedimat" oui)
+MOTS_EXACTS = {"app", "ia", "web", "data", "ged", "gst", "cloud"}
+
+# --- ZONES PÉPITES ---
+SPECIAL_ZONES = ["errachidia", "ouarzazate", "midelt", "tafilalet"]
 
 # --- EXCLUSIONS ---
 EXCLUSIONS = [
@@ -62,6 +83,26 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {msg}", flush=True)
+
+
+# =========================================================
+#              RECHERCHE DE MOTS-CLÉS
+# =========================================================
+@lru_cache(maxsize=4096)
+def _pattern(mot):
+    """Compile le motif une seule fois par mot (cache).
+    \b au debut  : le mot doit commencer une vraie coupure de mot.
+    \b a la fin  : uniquement pour les acronymes de MOTS_EXACTS.
+    Sans \b final, "agri" attrape bien "agricole" et "agriculture"."""
+    m = mot.lower().strip()
+    if m in MOTS_EXACTS:
+        return re.compile(r"\b" + re.escape(m) + r"\b")
+    return re.compile(r"\b" + re.escape(m))
+
+
+def contient(mot, texte_lower):
+    """Remplace `mot in texte` : evite les faux positifs en plein milieu d'un mot."""
+    return bool(_pattern(mot).search(texte_lower))
 
 
 # =========================================================
@@ -176,34 +217,50 @@ def save_seen(seen_list):
 # =========================================================
 #                       SCORING
 # =========================================================
-def scorer(text):
-    text_lower = text.lower()
-    for exc in EXCLUSIONS:
-        if exc in text_lower:
-            return 0, f"Exclu ({exc})"
+def is_pepite(text_lower):
+    """Zone prioritaire ou conseil agricole : l'offre doit passer quoi qu'il arrive."""
+    return any(contient(z, text_lower) for z in SPECIAL_ZONES) or contient("conseil agri", text_lower)
 
-    if "hébergement" in text_lower:
-        if not any(x in text_lower for x in ["web", "site", "cloud", "serveur", "plateforme", "logiciel", "données"]):
-            return 0, "Exclu (Hébergement non-IT)"
+
+def scorer(text):
+    """Retourne (score, categorie, mots_trouves).
+    Cette fonction ne decide PAS du seuil : elle cherche seulement la MEILLEURE
+    categorie. Le filtrage est fait dans scan_attempt(), pour que les pepites
+    puissent passer outre."""
+    text_lower = text.lower()
+
+    for exc in EXCLUSIONS:
+        if contient(exc, text_lower):
+            return 0, f"Exclu ({exc})", []
+
+    if contient("hébergement", text_lower):
+        if not any(contient(x, text_lower) for x in
+                   ["web", "site", "cloud", "serveur", "plateforme", "logiciel", "données"]):
+            return 0, "Exclu (Hébergement non-IT)", []
 
     print_words = ["impression", "banderole", "flyer", "imprimerie"]
     training_words = ["formation", "session", "atelier", "renforcement", "sensibilisation"]
-    if any(p in text_lower for p in print_words):
-        if not any(t in text_lower for t in training_words):
-            return 0, "Exclu (Impression seule)"
+    if any(contient(p, text_lower) for p in print_words):
+        if not any(contient(t, text_lower) for t in training_words):
+            return 0, "Exclu (Impression seule)", []
 
-    # for cat, mots in KEYWORDS.items():
-    #     if any(mot in text_lower for mot in mots):
-    #         return sum(1 for m in mots if m in text_lower), cat
-    # return 0, "Pas de mots-clés"
+    # On garde la MEILLEURE categorie, pas la premiere trouvee dans le dict
+    best_score, best_cat, best_mots = 0, "Pas de mots-clés", []
     for cat, mots in KEYWORDS.items():
-        score_actuel = sum(1 for m in mots if m in text_lower)
-        
-        # Règle stricte pour Event (>= 2), mais 1 suffit pour le reste
-        if score_actuel >= 2 or (score_actuel == 1 and cat != "Event & Formation"):
-            return score_actuel, cat
-            
-    return 0, "Pas de mots-clés"
+        trouves = [m for m in mots if contient(m, text_lower)]
+        if len(trouves) > best_score:
+            best_score, best_cat, best_mots = len(trouves), cat, trouves
+
+    return best_score, best_cat, best_mots
+
+
+def passe_le_seuil(score, category):
+    if category.startswith("Exclu") or category == "Pas de mots-clés":
+        return False
+    if category == "Event & Formation":
+        return score >= SEUIL_EVENT
+    return score >= SEUIL_DEFAUT
+
 
 # =========================================================
 #                        SCAN
@@ -283,42 +340,56 @@ def scan_attempt():
                     if offer_id in seen_ids:
                         continue
 
-                    score, category = scorer(full_text)
-                    if score > 0:
-                        objet = card.locator(".entreprise__middleSubCard a").nth(1).inner_text().replace("Objet :", "").strip()
-                        ref = card.locator(".entreprise__middleSubCard a").nth(0).inner_text().strip()
+                    t_lower = full_text.lower()
 
-                        date_elements = card.locator(".entreprise__rightSubCard--top .font-bold")
-                        date_limite = f"{date_elements.nth(0).inner_text().strip()} à {date_elements.nth(1).inner_text().strip()}"
-                        lieu = date_elements.last.inner_text().strip()
+                    # ⚠️ La pepite est detectee AVANT le filtrage : une offre
+                    # a Ouarzazate passe meme si son score est faible.
+                    special = is_pepite(t_lower)
+                    score, category, mots = scorer(full_text)
+                    retenue = passe_le_seuil(score, category)
 
-                        link_attr = card.locator(".entreprise__middleSubCard a").first.get_attribute("href")
-                        link = f"https://www.marchespublics.gov.ma{link_attr}"
+                    if DEBUG_SCORING:
+                        etat = "✅" if (retenue or special) else "❌"
+                        log(f"   {etat} score={score} cat={category} pepite={special} mots={mots}")
 
-                        recipients = [s for s in SUBSCRIBERS
-                                      if "ALL" in s["subscriptions"] or category in s["subscriptions"]]
-                        if not recipients:
-                            continue
+                    if not (retenue or special):
+                        continue
 
-                        t_lower = full_text.lower()
-                        is_special = any(c in t_lower for c in ["errachidia", "ouarzazate", "midelt", "tafilalet"]) or "conseil agri" in t_lower
+                    # Une pepite sans categorie exploitable est rangee dans "Pépite"
+                    if special and not retenue:
+                        category = "Pépite"
 
-                        emoji = "🚜🌾" if "agri" in t_lower else "📍🏜️" if is_special else "🚨"
-                        title = "PÉPITE DÉTECTÉE" if is_special else f"ALERTE {category}"
+                    objet = card.locator(".entreprise__middleSubCard a").nth(1).inner_text().replace("Objet :", "").strip()
+                    ref = card.locator(".entreprise__middleSubCard a").nth(0).inner_text().strip()
 
-                        msg = f"{emoji} **{title}**\n━━━━━━━━━━━━\n🎯 Score: {score}\n📅 Limite: `{date_limite}`\n📍 Lieu: `{lieu}`\n━━━━━━━━━━━━\n{ref}\nObjet: {objet}\n\n🔗 [Voir l'offre]({link})"
+                    date_elements = card.locator(".entreprise__rightSubCard--top .font-bold")
+                    date_limite = f"{date_elements.nth(0).inner_text().strip()} à {date_elements.nth(1).inner_text().strip()}"
+                    lieu = date_elements.last.inner_text().strip()
 
-                        # Parametres WhatsApp {{1}} a {{6}}
-                        #wa_params = [title, ref, objet, date_limite, lieu, link]
-                        wa_params = [f"{title} · Score {score}", ref, objet, date_limite, lieu, link]
+                    link_attr = card.locator(".entreprise__middleSubCard a").first.get_attribute("href")
+                    link = f"https://www.marchespublics.gov.ma{link_attr}"
 
-                        pending_alerts.append({
-                            'score': score + (100 if is_special else 0),
-                            'msg': msg,
-                            'wa_params': wa_params,
-                            'id': offer_id,
-                            'recipients': recipients
-                        })
+                    recipients = [s for s in SUBSCRIBERS
+                                  if "ALL" in s["subscriptions"] or category in s["subscriptions"]]
+                    if not recipients:
+                        log(f"↪️ Ignoree (aucun abonne pour '{category}') : {ref}")
+                        continue
+
+                    emoji = "🚜🌾" if contient("agri", t_lower) else "📍🏜️" if special else "🚨"
+                    title = "PÉPITE DÉTECTÉE" if special else f"ALERTE {category}"
+
+                    msg = f"{emoji} **{title}**\n━━━━━━━━━━━━\n🎯 Score: {score}\n📅 Limite: `{date_limite}`\n📍 Lieu: `{lieu}`\n━━━━━━━━━━━━\n{ref}\nObjet: {objet}\n\n🔗 [Voir l'offre]({link})"
+
+                    # Parametres WhatsApp {{1}} a {{6}}
+                    wa_params = [f"{title} · Score {score}", ref, objet, date_limite, lieu, link]
+
+                    pending_alerts.append({
+                        'score': score + (100 if special else 0),
+                        'msg': msg,
+                        'wa_params': wa_params,
+                        'id': offer_id,
+                        'recipients': recipients
+                    })
                 except Exception:
                     continue
 
@@ -353,7 +424,7 @@ def run_loop():
 
 
 if __name__ == "__main__":
-    log("🚀 Bot V5.1 (Telegram + WhatsApp, retry reseau)")
+    log("🚀 Bot V5.3 (matching par mot + pepites prioritaires)")
 
     if not WA_TOKEN:
         log("⚠️ WA_TOKEN absent : WhatsApp desactive, Telegram seul.")
